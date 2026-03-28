@@ -1,0 +1,10 @@
+# Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
+
+# Bluetooth — NimBLE (BLE-only, lighter than Bluedroid)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y

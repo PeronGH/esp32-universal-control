@@ -13,7 +13,7 @@ build-std = ["std", "panic_abort"]
 MCU = "esp32s3"
 ESP_IDF_VERSION = "v5.5.3"
 ESP_IDF_TOOLS_INSTALL_DIR = "workspace"
+ESP_IDF_SYS_ROOT_CRATE = "esp32-uc-firmware"
 
-# Uncomment this if you have moved the target dir by setting CARGO_TARGET_DIR or similar.
-# Required for now due to embuild limitations.
-#CARGO_WORKSPACE_DIR = { value = "", relative = true }
+# Required for embuild to resolve sdkconfig.defaults paths in a workspace.
+CARGO_WORKSPACE_DIR = { value = "", relative = true }

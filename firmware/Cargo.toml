@@ -1,0 +1,22 @@
+[package]
+name = "esp32-uc-firmware"
+version = "0.1.0"
+authors = ["Peron <peron_ap@icloud.com>"]
+edition = "2021"
+rust-version = "1.82"
+
+[[bin]]
+name = "esp32-uc-firmware"
+harness = false
+
+[dependencies]
+esp32-nimble = "0.12"
+esp-idf-svc = { version = "0.52.1", features = ["critical-section"] }
+log = "0.4"
+anyhow = "1.0.102"
+
+[build-dependencies]
+embuild = "0.33"
+
+[package.metadata.esp-idf-sys]
+esp_idf_sdkconfig_defaults = ["firmware/sdkconfig.defaults"]
