@@ -1,0 +1,19 @@
+[build]
+target = "xtensa-esp32s3-espidf"
+
+[target.'cfg(target_os = "espidf")']
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32s3"
+ESP_IDF_VERSION = "v5.5.3"
+ESP_IDF_TOOLS_INSTALL_DIR = "workspace"
+ESP_IDF_SYS_ROOT_CRATE = "esp32-uc-firmware"
+
+# Required for embuild to resolve sdkconfig.defaults paths in a workspace.
+CARGO_WORKSPACE_DIR = { value = "", relative = true }
