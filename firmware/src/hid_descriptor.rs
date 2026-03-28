@@ -17,31 +17,15 @@ use crate::ptp;
 // ---------------------------------------------------------------------------
 //
 // HID short-item byte format: bits 0–1 = bSize (0→0B, 1→1B, 2→2B, 3→4B),
-// bits 2–3 = bType (0=Main, 1=Global, 2=Local), bits 4–7 = bTag.
+// bits 2–3 = bType, bits 4–7 = bTag.
 //
-// Base tags below have bSize = 0. The sized variants (e.g. `USAGE_PAGE_8`)
-// OR in the actual data length. Defined locally so this module can be tested
-// on the host without pulling in esp32-nimble.
+// Base tags from esp32_nimble::hid have bSize = 0. The sized variants
+// OR in the data length for use in a raw byte array.
 
-// Main items (bType = 0)
-const HIDINPUT: u8 = 0x80;
-const FEATURE: u8 = 0xB0;
-const COLLECTION: u8 = 0xA0;
-const END_COLLECTION: u8 = 0xC0;
-
-// Global items (bType = 1)
-const USAGE_PAGE: u8 = 0x04;
-const LOGICAL_MINIMUM: u8 = 0x14;
-const LOGICAL_MAXIMUM: u8 = 0x24;
-const PHYSICAL_MAXIMUM: u8 = 0x44;
-const UNIT_EXPONENT: u8 = 0x54;
-const UNIT: u8 = 0x64;
-const REPORT_SIZE: u8 = 0x74;
-const REPORT_ID: u8 = 0x84;
-const REPORT_COUNT: u8 = 0x94;
-
-// Local items (bType = 2)
-const USAGE: u8 = 0x08;
+use esp32_nimble::hid::{
+    COLLECTION, END_COLLECTION, FEATURE, HIDINPUT, LOGICAL_MAXIMUM, LOGICAL_MINIMUM,
+    PHYSICAL_MAXIMUM, REPORT_COUNT, REPORT_ID, REPORT_SIZE, UNIT, UNIT_EXPONENT, USAGE, USAGE_PAGE,
+};
 
 // 1-byte data (bSize = 1)
 const USAGE_PAGE_8: u8 = USAGE_PAGE | 1;
