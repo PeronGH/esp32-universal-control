@@ -75,6 +75,27 @@ pub struct esp_hid_device_config_t {
 }
 
 // ---------------------------------------------------------------------------
+// Event data — subset of the esp_hidd_event_data_t union
+// ---------------------------------------------------------------------------
+
+/// The `feature` variant of `esp_hidd_event_data_t`.
+///
+/// Matches the C layout; only the fields we read are included.
+/// The union has other variants (start, connect, disconnect, …) at the same
+/// offset — only cast to this when handling `ESP_HIDD_FEATURE_EVENT`.
+#[repr(C)]
+pub struct esp_hidd_feature_event_data_t {
+    pub dev: *mut esp_hidd_dev_s,
+    pub usage: u32,
+    pub report_id: u16,
+    pub length: u16,
+    pub data: *const u8,
+    pub map_index: u8,
+    pub trans_type: u8,
+    pub report_type: u8,
+}
+
+// ---------------------------------------------------------------------------
 // Functions
 // ---------------------------------------------------------------------------
 

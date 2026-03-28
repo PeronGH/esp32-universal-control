@@ -253,6 +253,33 @@ unsafe fn preload_feature_reports() {
     }
 }
 
+/// Log details of an incoming feature report (SET_REPORT from host).
+///
+/// # Safety
+/// `event_data` must point to a valid `esp_hidd_event_data_t` whose active
+/// variant is `feature`.
+unsafe fn log_feature_event(event_data: *mut c_void) {
+    if event_data.is_null() {
+        info!("HIDD: feature report (no data)");
+        return;
+    }
+    let feat = &*(event_data as *const esp_hid_ffi::esp_hidd_feature_event_data_t);
+    let id = feat.report_id;
+    let len = feat.length as usize;
+
+    if !feat.data.is_null() && len > 0 {
+        let bytes = std::slice::from_raw_parts(feat.data, len);
+        info!("HIDD: feature SET report_id=0x{id:02x} data={bytes:02x?}");
+
+        // Report ID 0x04 = Input Mode.  Value 3 = Windows PTP collection.
+        if id == hid_descriptor::REPORTID_REPORTMODE as u16 && bytes.first() == Some(&0x03) {
+            info!("*** Windows set Input Mode = 3 (PTP) — precision touchpad confirmed ***");
+        }
+    } else {
+        info!("HIDD: feature GET report_id=0x{id:02x} len={len}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Callbacks
 // ---------------------------------------------------------------------------
@@ -287,7 +314,7 @@ unsafe extern "C" fn hidd_event_handler(
     _handler_args: *mut c_void,
     _base: esp_event_base_t,
     id: i32,
-    _event_data: *mut c_void,
+    event_data: *mut c_void,
 ) {
     match id {
         esp_hid_ffi::ESP_HIDD_START_EVENT => {
@@ -299,13 +326,9 @@ unsafe extern "C" fn hidd_event_handler(
         esp_hid_ffi::ESP_HIDD_CONNECT_EVENT => {
             info!("HIDD: connected — waiting for host enumeration");
             preload_feature_reports();
-            // Don't set CONNECTED yet; wait for feature reports to be read
-            // so the host has time to enable GATT notifications.
         }
         esp_hid_ffi::ESP_HIDD_FEATURE_EVENT => {
-            info!("HIDD: feature report received");
-            // Once Windows reads feature reports, it has subscribed to
-            // notifications and is ready to receive input reports.
+            log_feature_event(event_data);
             CONNECTED.store(true, Ordering::Release);
         }
         esp_hid_ffi::ESP_HIDD_DISCONNECT_EVENT => {
