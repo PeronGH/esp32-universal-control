@@ -1,12 +1,12 @@
 //! BLE HID device using NimBLE: advertising, HOGP setup, and report sending.
 
-use std::mem::size_of;
 use std::sync::Arc;
 
 use esp32_nimble::enums::*;
 use esp32_nimble::utilities::mutex::Mutex;
 use esp32_nimble::{BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice};
 use log::info;
+use zerocopy::IntoBytes;
 
 use crate::hid_descriptor::{
     self, REPORTID_DEVICE_CAPS, REPORTID_FUNCSWITCH, REPORTID_MULTITOUCH, REPORTID_PTPHQA,
@@ -97,15 +97,7 @@ impl BleHid {
     /// Send a PTP input report to the connected host.
     pub fn send_report(&self, report: &PtpReport) {
         let mut chr = self.touch_input.lock();
-        // SAFETY: PtpReport is repr(C, packed) with no padding; its byte
-        // representation is the exact HID report the host expects.
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                report as *const PtpReport as *const u8,
-                size_of::<PtpReport>(),
-            )
-        };
-        chr.set_value(bytes);
+        chr.set_value(report.as_bytes());
         chr.notify();
     }
 }

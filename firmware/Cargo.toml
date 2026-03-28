@@ -14,6 +14,7 @@ esp32-nimble = "0.12"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section"] }
 log = "0.4"
 anyhow = "1.0.102"
+zerocopy = { version = "0.8.47", features = ["derive"] }
 
 [build-dependencies]
 embuild = "0.33"

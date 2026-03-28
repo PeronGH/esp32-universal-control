@@ -4,8 +4,6 @@
 //! [`crate::hid_descriptor`] and the `PTP_REPORT` / `PTP_CONTACT` types from
 //! `imbushuo/mac-precision-touchpad` `Hid.h`.
 
-use core::mem;
-
 // ---------------------------------------------------------------------------
 // Protocol constants
 // ---------------------------------------------------------------------------
@@ -28,7 +26,7 @@ pub const INPUT_MODE_PTP: u8 = 0x03;
 /// Layout per the HID descriptor: 1 byte flags + 4 byte contact ID +
 /// 2 byte X + 2 byte Y = 9 bytes.
 #[repr(C, packed)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, zerocopy::IntoBytes, zerocopy::Immutable)]
 pub struct PtpContact {
     /// Bit 0: confidence, bit 1: tip switch.
     pub flags: u8,
@@ -50,7 +48,7 @@ impl PtpContact {
 ///
 /// `5 contacts * 9 B + 2 B scan_time + 1 B contact_count + 1 B button = 49 B`
 #[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
 pub struct PtpReport {
     /// Up to 5 finger slots; unused slots are zeroed.
     pub contacts: [PtpContact; MAX_CONTACTS as usize],
@@ -64,13 +62,16 @@ pub struct PtpReport {
 
 impl Default for PtpReport {
     fn default() -> Self {
-        // SAFETY: PtpReport is repr(C, packed) with no padding and all-zero is
-        // valid (no contacts, zero scan time, no button).
-        unsafe { mem::zeroed() }
+        Self {
+            contacts: [PtpContact::default(); MAX_CONTACTS as usize],
+            scan_time: 0,
+            contact_count: 0,
+            button: 0,
+        }
     }
 }
 
-const _: () = assert!(mem::size_of::<PtpReport>() == 49);
+const _: () = assert!(size_of::<PtpReport>() == 49);
 
 // ---------------------------------------------------------------------------
 // Feature report data
