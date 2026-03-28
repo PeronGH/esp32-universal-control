@@ -11,7 +11,10 @@
 
 use std::ffi::c_char;
 
-use esp_idf_svc::sys::{esp_err_t, esp_event_handler_t};
+use esp_idf_svc::sys::{
+    esp_ble_gatts_cb_param_t, esp_err_t, esp_event_handler_t, esp_gatt_if_t,
+    esp_gatts_cb_event_t,
+};
 
 // ---------------------------------------------------------------------------
 // Transport
@@ -76,6 +79,17 @@ pub struct esp_hid_device_config_t {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    /// GATTS event handler for the BLE HID device.
+    ///
+    /// Must be registered with `esp_ble_gatts_register_callback` **before**
+    /// calling `esp_hidd_dev_init`; the component defines the handler but does
+    /// not register it itself.
+    pub fn esp_hidd_gatts_event_handler(
+        event: esp_gatts_cb_event_t,
+        gatts_if: esp_gatt_if_t,
+        param: *mut esp_ble_gatts_cb_param_t,
+    );
+
     /// Initialise a HID device on the given transport.
     pub fn esp_hidd_dev_init(
         config: *const esp_hid_device_config_t,

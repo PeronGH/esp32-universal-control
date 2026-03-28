@@ -51,6 +51,13 @@ pub fn init() -> Result<(), EspError> {
         set_security_params()?;
         esp!(esp_ble_gap_set_device_name(DEVICE_NAME.as_ptr().cast()))?;
         configure_adv_data()?;
+
+        // The esp_hid component defines esp_hidd_gatts_event_handler but does
+        // not register it — callers must do so before esp_hidd_dev_init.
+        esp!(esp_ble_gatts_register_callback(Some(
+            esp_hid_ffi::esp_hidd_gatts_event_handler
+        )))?;
+
         init_hid_device()?;
     }
     Ok(())
