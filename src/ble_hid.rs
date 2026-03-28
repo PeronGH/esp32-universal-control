@@ -21,7 +21,7 @@ static HID_DEV: AtomicPtr<esp_hidd_dev_s> = AtomicPtr::new(std::ptr::null_mut())
 static CONNECTED: AtomicBool = AtomicBool::new(false);
 static SCAN_TIME: AtomicU16 = AtomicU16::new(0);
 
-const DEVICE_NAME: &[u8] = b"MacKVM PTP\0";
+const DEVICE_NAME: &[u8] = b"ESP32 UC PTP\0";
 
 /// HID service UUID — Bluetooth SIG base UUID with 16-bit 0x1812 embedded.
 #[rustfmt::skip]
@@ -195,7 +195,7 @@ unsafe fn init_hid_device() -> Result<(), EspError> {
         product_id: 0x5678,
         version: 0x0100,
         device_name: DEVICE_NAME.as_ptr().cast(),
-        manufacturer_name: c"MacKVM".as_ptr(),
+        manufacturer_name: c"esp32-universal-control".as_ptr(),
         serial_number: c"00000001".as_ptr(),
         report_maps: &mut report_map,
         report_maps_len: 1,
