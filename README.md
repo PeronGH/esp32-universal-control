@@ -16,7 +16,9 @@ cd host && cargo run -- run <serial-port>   # capture mode
 cd host && cargo run -- debug <serial-port> # debug CLI
 ```
 
-The host binary needs macOS Accessibility and Input Monitoring permissions.
+The host binary needs two macOS permissions (System Settings > Privacy & Security):
+- **Input Monitoring**: to capture keyboard events
+- **Accessibility**: to suppress keyboard and mouse events when forwarding
 
 ## Switching targets
 
