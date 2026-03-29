@@ -1,7 +1,7 @@
 mod ble_hid;
 mod hid_descriptor;
 
-use esp32_uc_protocol::wire::HostMsg;
+use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::usb_serial::UsbSerialDriver;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -62,7 +62,7 @@ fn run() -> anyhow::Result<()> {
                     remaining
                 }
                 FeedResult::Success { data, remaining } => {
-                    handle_msg(&ble, data);
+                    handle_msg(&ble, &mut usb_serial, data);
                     remaining
                 }
             };
@@ -70,17 +70,30 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-fn handle_msg(ble: &ble_hid::BleHid, msg: HostMsg) {
-    if !ble.connected() {
-        return;
+/// Send a `FirmwareMsg` back to the host over USB-Serial-JTAG.
+fn send_to_host(usb: &mut UsbSerialDriver<'_>, msg: &FirmwareMsg) {
+    let mut buf = [0u8; 64];
+    match postcard::to_slice_cobs(msg, &mut buf) {
+        Ok(encoded) => {
+            if let Err(e) = usb.write(encoded, esp_idf_svc::hal::delay::BLOCK) {
+                warn!("USB serial write failed: {e}");
+            }
+        }
+        Err(e) => warn!("postcard encode failed: {e}"),
     }
+}
 
+fn handle_msg(ble: &ble_hid::BleHid, usb: &mut UsbSerialDriver<'_>, msg: HostMsg) {
     match msg {
         HostMsg::Keyboard(report) => {
-            ble.send_keyboard(&report);
+            if ble.connected() {
+                ble.send_keyboard(&report);
+            }
         }
         HostMsg::Touch(report) => {
-            ble.send_touch(&report);
+            if ble.connected() {
+                ble.send_touch(&report);
+            }
         }
         HostMsg::SwitchSlot(slot) => {
             info!("SwitchSlot({slot}) — not yet implemented");
@@ -89,7 +102,16 @@ fn handle_msg(ble: &ble_hid::BleHid, msg: HostMsg) {
             info!("SetSlotDevice(slot={slot}, addr={addr:02x?}) — not yet implemented");
         }
         HostMsg::QuerySlots => {
-            info!("QuerySlots — not yet implemented");
+            for (slot, desc) in ble.connections().enumerate() {
+                send_to_host(
+                    usb,
+                    &FirmwareMsg::SlotStatus {
+                        slot: slot as u8,
+                        addr: desc.address().as_le_bytes(),
+                        connected: true,
+                    },
+                );
+            }
         }
     }
 }

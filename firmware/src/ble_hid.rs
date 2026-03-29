@@ -150,6 +150,11 @@ impl BleHid {
         BLEDevice::take().get_server().connected_count() > 0
     }
 
+    /// Iterate over currently connected BLE peers.
+    pub fn connections(&self) -> impl Iterator<Item = esp32_nimble::BLEConnDesc> + '_ {
+        BLEDevice::take().get_server().connections()
+    }
+
     /// Send a keyboard input report.
     pub fn send_keyboard(&self, report: &KeyboardReport) {
         let mut chr = self.keyboard_input.lock();
