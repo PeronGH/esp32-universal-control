@@ -27,8 +27,11 @@ fn main() {
     }
 }
 
-/// UART read timeout: 50 ms in FreeRTOS ticks (CONFIG_FREERTOS_HZ = 100).
-const READ_TIMEOUT_TICKS: u32 = 5;
+/// UART read timeout while idle: 50 ms in FreeRTOS ticks (CONFIG_FREERTOS_HZ = 100).
+const IDLE_READ_TIMEOUT_TICKS: u32 = 5;
+/// Shorter UART read timeout while a touch frame is pending so BLE pacing can
+/// drain the latest frame without waiting for another serial packet.
+const ACTIVE_TOUCH_READ_TIMEOUT_TICKS: u32 = 1;
 /// Host↔firmware UART baud rate.
 const UART_BAUD_RATE: u32 = 921_600;
 /// Maximum postcard+COBS message size we can receive.
@@ -83,7 +86,14 @@ fn run() -> anyhow::Result<()> {
             session.handle_ble_event(&tx_msg, event);
         }
 
-        let n = match rx.read(&mut read_buf, READ_TIMEOUT_TICKS) {
+        session.flush_touch_if_due(&ble);
+        let read_timeout_ticks = if session.has_pending_touch() {
+            ACTIVE_TOUCH_READ_TIMEOUT_TICKS
+        } else {
+            IDLE_READ_TIMEOUT_TICKS
+        };
+
+        let n = match rx.read(&mut read_buf, read_timeout_ticks) {
             Ok(n) => n,
             Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_TIMEOUT => continue,
             Err(e) => return Err(e.into()),
@@ -103,6 +113,7 @@ fn run() -> anyhow::Result<()> {
                 }
                 FeedResult::Success { data, remaining } => {
                     session.handle_host_msg(&ble, &tx_msg, data);
+                    session.flush_touch_if_due(&ble);
                     remaining
                 }
             };

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use esp32_nimble::enums::*;
 use esp32_nimble::utilities::mutex::Mutex;
+use esp32_nimble::BLEError;
 use esp32_nimble::{BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice};
 use log::{info, warn};
 use zerocopy::IntoBytes;
@@ -204,10 +205,8 @@ impl BleHid {
     }
 
     /// Send a PTP touch input report to one connected BLE device.
-    pub fn send_touch_to(&self, conn_handle: u16, report: &PtpReport) {
+    pub fn send_touch_to(&self, conn_handle: u16, report: &PtpReport) -> Result<(), BLEError> {
         let chr = self.touch_input.lock();
-        if let Err(err) = chr.notify_with(report.as_bytes(), conn_handle) {
-            warn!("touch notify({conn_handle}) failed: {err:?}");
-        }
+        chr.notify_with(report.as_bytes(), conn_handle)
     }
 }

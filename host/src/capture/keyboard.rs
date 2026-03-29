@@ -175,7 +175,12 @@ impl CaptureState {
             return None;
         }
 
-        if let Some(idx) = self.keyboard.keys.iter().position(|current| *current == hid) {
+        if let Some(idx) = self
+            .keyboard
+            .keys
+            .iter()
+            .position(|current| *current == hid)
+        {
             self.keyboard.keys.copy_within((idx + 1).., idx);
             self.keyboard.keys[self.keyboard.keys.len() - 1] = 0;
             return Some(HostMsg::KeyboardState(self.keyboard));
@@ -266,8 +271,7 @@ fn finish_escape(state: &mut CaptureState, tx: &Outbox, forwarding: bool) {
                 {
                     tx.push(msg);
                 }
-                if let Some(msg) =
-                    state.update_hid_key_state(keymap::mac_to_hid(MAC_ESCAPE), false)
+                if let Some(msg) = state.update_hid_key_state(keymap::mac_to_hid(MAC_ESCAPE), false)
                 {
                     tx.push(msg);
                 }
