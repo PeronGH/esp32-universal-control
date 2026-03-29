@@ -36,19 +36,37 @@ unsafe extern "C" {
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
     fn CGDisplayHideCursor(display: u32) -> i32;
     fn CGDisplayShowCursor(display: u32) -> i32;
+    fn CGSSetConnectionProperty(
+        connection: i32,
+        target: i32,
+        key: core_foundation::string::CFStringRef,
+        value: core_foundation::base::CFTypeRef,
+    ) -> i32;
+    fn _CGSDefaultConnection() -> i32;
 }
 
-/// Main display ID (kCGDirectMainDisplay).
 const MAIN_DISPLAY: u32 = 0;
 
+/// Enable hiding cursor from a background process (private CG API,
+/// same approach as Barrier KVM) and hide the cursor.
 fn hide_mac_cursor() {
-    // SAFETY: CGDisplayHideCursor is safe to call with a valid display ID.
-    unsafe { CGDisplayHideCursor(MAIN_DISPLAY) };
+    unsafe {
+        // Allow cursor hide from a non-foreground app.
+        let key = core_foundation::string::CFString::new("SetsCursorInBackground");
+        CGSSetConnectionProperty(
+            _CGSDefaultConnection(),
+            _CGSDefaultConnection(),
+            key.as_concrete_TypeRef(),
+            core_foundation::boolean::CFBoolean::true_value().as_CFTypeRef(),
+        );
+        CGDisplayHideCursor(MAIN_DISPLAY);
+    }
 }
 
 pub fn show_mac_cursor() {
-    // SAFETY: CGDisplayShowCursor is safe to call with a valid display ID.
-    unsafe { CGDisplayShowCursor(MAIN_DISPLAY) };
+    unsafe {
+        CGDisplayShowCursor(MAIN_DISPLAY);
+    }
 }
 
 /// Re-enable the event tap after macOS disabled it due to timeout.
@@ -132,12 +150,18 @@ pub fn run(
                 CGEventType::LeftMouseDown => {
                     if fwd {
                         click_state.store(true, Ordering::Release);
+                        CallbackResult::Drop
+                    } else {
+                        CallbackResult::Keep
                     }
-                    CallbackResult::Keep
                 }
                 CGEventType::LeftMouseUp => {
                     click_state.store(false, Ordering::Release);
-                    CallbackResult::Keep
+                    if fwd {
+                        CallbackResult::Drop
+                    } else {
+                        CallbackResult::Keep
+                    }
                 }
                 _ => CallbackResult::Keep,
             }
