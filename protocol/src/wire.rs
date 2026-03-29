@@ -3,36 +3,30 @@
 //! Messages are serialized with `postcard` and framed with COBS (`0x00`
 //! delimiter). Both sides use `postcard::to_slice_cobs` to encode and
 //! `postcard::CobsAccumulator` to stream-decode.
+//!
+//! The firmware is stateless: it knows which BLE devices are connected but
+//! has no concept of slots or active targets. All routing decisions (slot
+//! assignment, active device selection) are made by the host.
 
 use serde::{Deserialize, Serialize};
 
 use crate::keyboard::KeyboardReport;
 use crate::ptp::PtpReport;
 
-/// Maximum BLE device slots the firmware supports.
-pub const MAX_SLOTS: usize = 4;
-
 /// Messages from host to firmware.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum HostMsg {
-    /// Send a keyboard HID report to the active BLE slot.
+    /// Forward a keyboard HID report to all connected BLE devices.
     Keyboard(KeyboardReport),
 
-    /// Send a consumer control report (16-bit media key bitfield).
+    /// Forward a consumer control report (16-bit media key bitfield).
     Consumer(u16),
 
-    /// Send a PTP touch report to the active BLE slot.
+    /// Forward a PTP touch report to all connected BLE devices.
     Touch(PtpReport),
 
-    /// Switch which BLE slot receives subsequent HID reports.
-    SwitchSlot(u8),
-
-    /// Assign a bonded device address to a slot.
-    /// The firmware will auto-reconnect to this device.
-    SetSlotDevice { slot: u8, addr: [u8; 6] },
-
-    /// Request the firmware to report all slot statuses.
-    QuerySlots,
+    /// Request the firmware to report all active BLE connections.
+    QueryConnections,
 
     /// Handshake: host sends Ping, firmware responds with Pong.
     Ping,
@@ -41,18 +35,14 @@ pub enum HostMsg {
 /// Messages from firmware to host.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FirmwareMsg {
-    /// Keyboard LED state changed (Caps/Num/Scroll Lock bits).
-    LedState(u8),
-
     /// Handshake response to `HostMsg::Ping`.
     Pong,
 
-    /// A BLE slot's connection status changed.
-    SlotStatus {
-        slot: u8,
-        /// Peer BLE address. The firmware cannot read the peer's device
-        /// name — it is a HOGP server. Naming is host-side.
-        addr: [u8; 6],
-        connected: bool,
-    },
+    /// Keyboard LED state changed (Caps/Num/Scroll Lock bits).
+    LedState(u8),
+
+    /// A BLE connection status change, or response to `QueryConnections`.
+    /// The firmware reports the peer address and whether it connected or
+    /// disconnected. Slot assignment is the host's responsibility.
+    ConnectionStatus { addr: [u8; 6], connected: bool },
 }

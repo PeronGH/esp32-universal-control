@@ -8,6 +8,65 @@ use esp32_uc_protocol::ptp::{PtpContact, PtpReport};
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 use serialport5::SerialPort;
 
+const MAX_SLOTS: usize = 4;
+
+/// Host-side slot table. Maps slots to BLE addresses.
+/// The firmware has no concept of slots — this is entirely host-side.
+struct SlotTable {
+    slots: [Option<[u8; 6]>; MAX_SLOTS],
+    active: usize,
+}
+
+impl SlotTable {
+    fn new() -> Self {
+        Self {
+            slots: [None; MAX_SLOTS],
+            active: 0,
+        }
+    }
+
+    /// Assign an address to the first empty slot, or return its existing slot.
+    fn assign(&mut self, addr: [u8; 6]) -> usize {
+        // Already assigned?
+        if let Some(i) = self.slots.iter().position(|s| *s == Some(addr)) {
+            return i;
+        }
+        // First empty slot.
+        if let Some(i) = self.slots.iter().position(|s| s.is_none()) {
+            self.slots[i] = Some(addr);
+            return i;
+        }
+        // Full — overwrite active slot.
+        self.slots[self.active] = Some(addr);
+        self.active
+    }
+
+    /// Mark an address as disconnected (clear its slot).
+    fn disconnect(&mut self, addr: [u8; 6]) {
+        if let Some(slot) = self.slots.iter_mut().find(|s| **s == Some(addr)) {
+            *slot = None;
+        }
+    }
+
+    fn print(&self) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            let marker = if i == self.active { "* " } else { "  " };
+            match slot {
+                Some(addr) => println!("{marker}slot {i}: {}", format_addr(addr)),
+                None => println!("{marker}slot {i}: (empty)"),
+            }
+        }
+    }
+}
+
+/// Format a BLE address (little-endian bytes) as a colon-separated string.
+fn format_addr(addr: &[u8; 6]) -> String {
+    format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]
+    )
+}
+
 /// Encode a `HostMsg` and write it to the serial port.
 fn send(port: &mut SerialPort, msg: &HostMsg) -> anyhow::Result<()> {
     let mut buf = [0u8; 128];
@@ -16,8 +75,7 @@ fn send(port: &mut SerialPort, msg: &HostMsg) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Background reader: decodes `FirmwareMsg` from the serial port and sends
-/// them to the main thread via a channel.
+/// Background reader: decodes `FirmwareMsg` from the serial port.
 fn spawn_reader(mut port: SerialPort, tx: mpsc::Sender<FirmwareMsg>) {
     std::thread::spawn(move || {
         use postcard::accumulator::{CobsAccumulator, FeedResult};
@@ -46,14 +104,6 @@ fn spawn_reader(mut port: SerialPort, tx: mpsc::Sender<FirmwareMsg>) {
     });
 }
 
-/// Format a BLE address (little-endian bytes) as a colon-separated string.
-fn format_addr(addr: &[u8; 6]) -> String {
-    format!(
-        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-        addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]
-    )
-}
-
 /// Send Ping and wait for Pong. Retries a few times.
 fn handshake(
     write_port: &mut SerialPort,
@@ -68,34 +118,28 @@ fn handshake(
                 eprintln!(" ok");
                 return Ok(());
             }
-            Ok(other) => {
-                eprintln!(" unexpected: {other:?}");
-            }
-            Err(_) => {
-                eprintln!(" timeout");
-            }
+            Ok(other) => eprintln!(" unexpected: {other:?}"),
+            Err(_) => eprintln!(" timeout"),
         }
     }
     bail!("firmware did not respond to Ping — wrong port or firmware not running");
 }
 
-fn handle_fw_msg(msg: FirmwareMsg) {
+/// Handle a firmware event: update slot table and print.
+fn handle_fw_event(msg: FirmwareMsg, slots: &mut SlotTable) {
     match msg {
-        FirmwareMsg::Pong => {} // handled by handshake
-        FirmwareMsg::SlotStatus {
-            slot,
-            addr,
-            connected,
-        } => {
-            let status = if connected {
-                "connected"
+        FirmwareMsg::Pong => {}
+        FirmwareMsg::ConnectionStatus { addr, connected } => {
+            if connected {
+                let slot = slots.assign(addr);
+                println!("  [event] slot {slot}: connected {}", format_addr(&addr));
             } else {
-                "disconnected"
-            };
-            println!("  slot {slot}: {status} {}", format_addr(&addr));
+                slots.disconnect(addr);
+                println!("  [event] disconnected {}", format_addr(&addr));
+            }
         }
         FirmwareMsg::LedState(bits) => {
-            println!("  LED state: {bits:#04x}");
+            println!("  [event] LED state: {bits:#04x}");
         }
     }
 }
@@ -113,30 +157,30 @@ fn run() -> anyhow::Result<()> {
 
     let mut write_port = port.try_clone().context("clone serial port")?;
 
-    // Background reader for firmware responses.
     let (fw_tx, fw_rx) = mpsc::channel::<FirmwareMsg>();
     spawn_reader(port, fw_tx);
 
-    // Verify we're talking to the right device.
     handshake(&mut write_port, &fw_rx)?;
 
-    println!("Connected to {port_name}");
-    println!("  t = touch sweep step");
-    println!("  k = random key");
-    println!("  l = list connected devices");
-    println!("  q = quit");
-
+    let mut slots = SlotTable::new();
     let mut scan_time: u16 = 0;
+
+    println!("Connected to {port_name}");
+    println!("  t       = touch sweep");
+    println!("  k       = random key");
+    println!("  l       = list connections");
+    println!("  s <N>   = switch active slot");
+    println!("  q       = quit");
 
     let stdin = io::stdin();
 
     loop {
-        // Drain any pending firmware messages.
+        // Drain pending firmware events.
         while let Ok(msg) = fw_rx.try_recv() {
-            handle_fw_msg(msg);
+            handle_fw_event(msg, &mut slots);
         }
 
-        print!("> ");
+        print!("[{}] > ", slots.active);
         io::stdout().flush()?;
 
         let mut line = String::new();
@@ -144,9 +188,11 @@ fn run() -> anyhow::Result<()> {
             break;
         }
 
-        match line.trim() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let cmd = parts.first().copied().unwrap_or("");
+
+        match cmd {
             "t" => {
-                // Send a full horizontal sweep: finger down, move, lift.
                 let mut x: u16 = 5000;
                 while x <= 15_000 {
                     let report = PtpReport {
@@ -169,7 +215,6 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(Duration::from_millis(16));
                     x += 200;
                 }
-                // Finger lift
                 let report = PtpReport {
                     scan_time,
                     ..PtpReport::default()
@@ -182,7 +227,6 @@ fn run() -> anyhow::Result<()> {
             "k" => {
                 let letter = b'a' + (scan_time as u8 % 26);
                 let keycode = 0x04 + (letter - b'a');
-
                 send(
                     &mut write_port,
                     &HostMsg::Keyboard(KeyboardReport {
@@ -195,33 +239,28 @@ fn run() -> anyhow::Result<()> {
                     &mut write_port,
                     &HostMsg::Keyboard(KeyboardReport::default()),
                 )?;
-
                 println!("  key '{}'", letter as char);
             }
 
             "l" => {
-                send(&mut write_port, &HostMsg::QuerySlots)?;
-                // Give firmware time to respond.
-                std::thread::sleep(Duration::from_millis(200));
-                let mut found = false;
-                while let Ok(msg) = fw_rx.try_recv() {
-                    if let FirmwareMsg::SlotStatus {
-                        slot,
-                        addr,
-                        connected,
-                    } = msg
-                    {
-                        let status = if connected {
-                            "connected"
-                        } else {
-                            "disconnected"
-                        };
-                        println!("  slot {slot}: {status} {}", format_addr(&addr));
-                        found = true;
-                    }
+                send(&mut write_port, &HostMsg::QueryConnections)?;
+                // Collect responses with timeout instead of fixed sleep.
+                while let Ok(msg) = fw_rx.recv_timeout(Duration::from_millis(300)) {
+                    handle_fw_event(msg, &mut slots);
                 }
-                if !found {
-                    println!("  no connected devices");
+                slots.print();
+            }
+
+            "s" => {
+                if let Some(n) = parts.get(1).and_then(|s| s.parse::<usize>().ok()) {
+                    if n < MAX_SLOTS {
+                        slots.active = n;
+                        println!("  active slot: {n}");
+                    } else {
+                        println!("  slot must be 0..{}", MAX_SLOTS - 1);
+                    }
+                } else {
+                    println!("  usage: s <0-{}>", MAX_SLOTS - 1);
                 }
             }
 
@@ -232,9 +271,7 @@ fn run() -> anyhow::Result<()> {
 
             "" => {}
 
-            other => {
-                println!("  unknown command: {other:?}");
-            }
+            other => println!("  unknown command: {other:?}"),
         }
     }
 

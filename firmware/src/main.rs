@@ -51,16 +51,14 @@ fn run() -> anyhow::Result<()> {
     let mut read_buf = [0u8; 64];
 
     loop {
-        // Timeout read so we can drain BLE events between reads.
-        // UartDriver::read returns Err(ESP_ERR_TIMEOUT) on timeout, not Ok(0).
         let n = match uart.read(&mut read_buf, READ_TIMEOUT_TICKS) {
             Ok(n) => n,
             Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_TIMEOUT => 0,
             Err(e) => return Err(e.into()),
         };
 
-        // Forward BLE connection events to host.
-        while let Ok(msg) = ble.event_rx.try_recv() {
+        // Forward BLE events (connect/disconnect, LED state) to host.
+        while let Some(msg) = ble.try_recv_event() {
             send_to_host(&uart, &msg);
         }
 
@@ -129,18 +127,11 @@ fn handle_msg(ble: &ble_hid::BleHid, uart: &UartDriver<'_>, msg: HostMsg) {
                 ble.send_touch(&report);
             }
         }
-        HostMsg::SwitchSlot(slot) => {
-            info!("SwitchSlot({slot}) — not yet implemented");
-        }
-        HostMsg::SetSlotDevice { slot, addr } => {
-            info!("SetSlotDevice(slot={slot}, addr={addr:02x?}) — not yet implemented");
-        }
-        HostMsg::QuerySlots => {
-            for (slot, desc) in ble.connections().enumerate() {
+        HostMsg::QueryConnections => {
+            for desc in ble.connections() {
                 send_to_host(
                     uart,
-                    &FirmwareMsg::SlotStatus {
-                        slot: slot as u8,
+                    &FirmwareMsg::ConnectionStatus {
                         addr: desc.address().as_le_bytes(),
                         connected: true,
                     },
