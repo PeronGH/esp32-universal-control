@@ -57,8 +57,14 @@ pub struct PtpContact {
 }
 
 impl PtpContact {
-    /// Flags byte for a confident, touching finger.
-    pub const FINGER_DOWN: u8 = 0x03; // confidence | tip_switch
+    /// Bit 0: contact is intentional / confident.
+    pub const CONFIDENCE: u8 = 0x01;
+    /// Bit 1: contact is touching the surface.
+    pub const TIP_SWITCH: u8 = 0x02;
+    /// Flags byte for a confident finger that is touching the surface.
+    pub const FINGER_DOWN: u8 = Self::CONFIDENCE | Self::TIP_SWITCH;
+    /// Flags byte for a confident finger lift at the last reported position.
+    pub const FINGER_UP: u8 = Self::CONFIDENCE;
 }
 
 /// Complete PTP input report (excluding the report ID byte, which the BLE
@@ -80,7 +86,8 @@ pub struct PtpReport {
     pub contacts: [PtpContact; MAX_CONTACTS as usize],
     /// Scan time in 100 µs increments (wraps at u16::MAX).
     pub scan_time: u16,
-    /// Number of active contacts in this report.
+    /// Number of contacts encoded in this report, including one-frame
+    /// liftoff reports that keep confidence set while clearing tip switch.
     pub contact_count: u8,
     /// 1 if the clickpad button is pressed, 0 otherwise.
     pub button: u8,

@@ -98,8 +98,19 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
                     x += 200;
                 }
                 let report = PtpReport {
+                    contacts: {
+                        let mut c = [PtpContact::default(); 5];
+                        c[0] = PtpContact {
+                            flags: PtpContact::FINGER_UP,
+                            contact_id: 1,
+                            x: 15_000,
+                            y: 6000,
+                        };
+                        c
+                    },
                     scan_time,
-                    ..PtpReport::default()
+                    contact_count: 1,
+                    button: 0,
                 };
                 scan_time = scan_time.wrapping_add(50);
                 serial::send(&mut write_port, &HostMsg::Touch(report))?;
