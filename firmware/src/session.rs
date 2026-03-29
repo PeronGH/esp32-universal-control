@@ -263,6 +263,13 @@ impl Session {
             return;
         }
 
+        if !ble.has_connection(conn_handle) {
+            self.touch_dirty = false;
+            self.next_touch_send_at_us = 0;
+            self.touch.reset();
+            return;
+        }
+
         let now_us = current_time_us();
         if now_us < self.next_touch_send_at_us {
             return;
@@ -298,7 +305,9 @@ impl Session {
             }
             Err(err) => {
                 warn!("touch notify failed: {err:?}");
-                self.next_touch_send_at_us = now_us + TOUCH_RETRY_INTERVAL_US;
+                self.touch_dirty = false;
+                self.next_touch_send_at_us = 0;
+                self.touch.reset();
             }
         }
     }

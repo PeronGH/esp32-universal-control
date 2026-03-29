@@ -196,6 +196,14 @@ impl BleHid {
         self.event_rx.take().expect("event_rx already taken")
     }
 
+    /// Returns `true` when the specified connection handle is still active.
+    pub fn has_connection(&self, conn_handle: u16) -> bool {
+        BLEDevice::take()
+            .get_server()
+            .connections()
+            .any(|desc| desc.conn_handle() == conn_handle)
+    }
+
     /// Send a keyboard input report to one connected BLE device.
     pub fn send_keyboard_to(&self, conn_handle: u16, report: &KeyboardReport) {
         let chr = self.keyboard_input.lock();
