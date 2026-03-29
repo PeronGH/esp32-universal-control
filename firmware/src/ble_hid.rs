@@ -62,7 +62,7 @@ pub enum BleEvent {
     /// A BLE peer connected.
     Connected { conn_handle: u16, addr: [u8; 6] },
     /// A BLE peer disconnected.
-    Disconnected { conn_handle: u16, addr: [u8; 6] },
+    Disconnected { conn_handle: u16 },
     /// Keyboard LED state changed.
     LedState(u8),
 }
@@ -105,7 +105,6 @@ impl BleHid {
             info!("BLE disconnected: {:?}", desc.address());
             let _ = tx.send(BleEvent::Disconnected {
                 conn_handle: desc.conn_handle(),
-                addr: desc.id_address().as_le_bytes(),
             });
         });
 

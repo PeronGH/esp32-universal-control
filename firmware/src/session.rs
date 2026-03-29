@@ -58,7 +58,7 @@ impl Session {
                     }
                 }
             }
-            BleEvent::Disconnected { conn_handle, .. } => {
+            BleEvent::Disconnected { conn_handle } => {
                 if let Some(slot) = self.slot_for_conn_handle(conn_handle) {
                     self.peers[slot] = None;
                     let was_active = self.active_slot == Some(slot as u8);
