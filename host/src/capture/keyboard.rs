@@ -17,8 +17,6 @@ use log::info;
 use esp32_uc_protocol::keyboard::KeyboardReport;
 use esp32_uc_protocol::wire::HostMsg;
 
-use core_graphics::display::CGDisplay;
-
 use super::keymap;
 use crate::slots::SlotTable;
 
@@ -36,6 +34,21 @@ static TAP_MACH_PORT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::nul
 
 unsafe extern "C" {
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    fn CGDisplayHideCursor(display: u32) -> i32;
+    fn CGDisplayShowCursor(display: u32) -> i32;
+}
+
+/// Main display ID (kCGDirectMainDisplay).
+const MAIN_DISPLAY: u32 = 0;
+
+fn hide_mac_cursor() {
+    // SAFETY: CGDisplayHideCursor is safe to call with a valid display ID.
+    unsafe { CGDisplayHideCursor(MAIN_DISPLAY) };
+}
+
+pub fn show_mac_cursor() {
+    // SAFETY: CGDisplayShowCursor is safe to call with a valid display ID.
+    unsafe { CGDisplayShowCursor(MAIN_DISPLAY) };
 }
 
 /// Re-enable the event tap after macOS disabled it due to timeout.
@@ -165,8 +178,7 @@ fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
     let switched = match keycode {
         MAC_1 => {
             table.switch_to_mac();
-            // Reconnect cursor to trackpad.
-            let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
+            show_mac_cursor();
             info!("Switched to Mac (local)");
             true
         }
@@ -190,8 +202,7 @@ fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
     };
 
     if switched && table.is_forwarding() {
-        // Disconnect cursor from trackpad so Mac cursor freezes.
-        let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(false);
+        hide_mac_cursor();
         info!("Switched to remote slot {}", table.active());
     }
 
