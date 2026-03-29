@@ -9,7 +9,6 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::Instant;
 
 use core_foundation::array::CFArrayGetCount;
 use core_foundation::array::CFArrayGetValueAtIndex;
@@ -83,7 +82,6 @@ const PTP_Y_MAX: f32 = 12_000.0;
 // ---------------------------------------------------------------------------
 
 static TX: std::sync::OnceLock<mpsc::Sender<HostMsg>> = std::sync::OnceLock::new();
-static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 static CLICK_STATE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 static SLOTS: std::sync::OnceLock<Arc<std::sync::Mutex<crate::slots::SlotTable>>> =
     std::sync::OnceLock::new();
@@ -112,14 +110,10 @@ unsafe extern "C" fn mt_callback(
         &[]
     };
 
-    // Scan time in 100µs units since start, wrapping at u16::MAX.
-    let start = START_TIME.get_or_init(Instant::now);
-    let scan_time = (start.elapsed().as_micros() / 100) as u16;
-    // Read click state from CGEventTap (shared AtomicBool).
     let clicked = CLICK_STATE.get().is_some_and(|b| b.load(Ordering::Acquire));
 
+    // scan_time is set to 0 here; firmware overwrites it at BLE delivery time.
     let mut report = PtpReport {
-        scan_time,
         button: clicked as u8,
         ..PtpReport::default()
     };
