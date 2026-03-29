@@ -82,9 +82,10 @@ unsafe extern "C" fn mt_callback(
     _timestamp: f64,
     _frame: i32,
 ) {
-    let Some(tx) = TX.get() else { return };
-
-    let count = finger_count.min(ptp::MAX_CONTACTS as i32) as usize;
+    let Some(tx) = TX.get() else {
+        eprintln!("[trackpad] TX not initialized");
+        return;
+    };
     let finger_slice = if finger_count > 0 && !fingers.is_null() {
         unsafe { std::slice::from_raw_parts(fingers, finger_count as usize) }
     } else {
@@ -92,22 +93,27 @@ unsafe extern "C" fn mt_callback(
     };
 
     let scan_time = SCAN_TIME.fetch_add(1, Ordering::Relaxed);
-
     let mut report = PtpReport {
         scan_time,
-        contact_count: count as u8,
         ..PtpReport::default()
     };
 
-    for (i, f) in finger_slice.iter().take(count).enumerate() {
-        let touching = f.state >= 4;
-        report.contacts[i] = PtpContact {
+    // Only include fingers that are actually touching (state 4 = touching).
+    // contact_count must match the number of contacts with tip_switch set.
+    let mut active = 0usize;
+    for f in finger_slice.iter().take(ptp::MAX_CONTACTS as usize) {
+        let touching = f.state == 4;
+        report.contacts[active] = PtpContact {
             flags: if touching { PtpContact::FINGER_DOWN } else { 0 },
             contact_id: f.identifier as u32,
             x: (f.normalized_pos.x * PTP_X_MAX) as u16,
-            y: ((1.0 - f.normalized_pos.y) * PTP_Y_MAX) as u16, // Y inverted
+            y: ((1.0 - f.normalized_pos.y) * PTP_Y_MAX) as u16,
         };
+        if touching {
+            active += 1;
+        }
     }
+    report.contact_count = active as u8;
 
     let _ = tx.send(HostMsg::Touch(report));
 }
