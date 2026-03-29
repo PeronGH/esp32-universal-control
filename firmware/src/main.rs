@@ -147,5 +147,8 @@ fn handle_msg(ble: &ble_hid::BleHid, uart: &UartDriver<'_>, msg: HostMsg) {
                 );
             }
         }
+        HostMsg::Ping => {
+            send_to_host(uart, &FirmwareMsg::Pong);
+        }
     }
 }

@@ -33,6 +33,9 @@ pub enum HostMsg {
 
     /// Request the firmware to report all slot statuses.
     QuerySlots,
+
+    /// Handshake: host sends Ping, firmware responds with Pong.
+    Ping,
 }
 
 /// Messages from firmware to host.
@@ -40,6 +43,9 @@ pub enum HostMsg {
 pub enum FirmwareMsg {
     /// Keyboard LED state changed (Caps/Num/Scroll Lock bits).
     LedState(u8),
+
+    /// Handshake response to `HostMsg::Ping`.
+    Pong,
 
     /// A BLE slot's connection status changed.
     SlotStatus {
