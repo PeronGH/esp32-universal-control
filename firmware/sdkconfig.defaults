@@ -12,6 +12,10 @@ CONFIG_BT_NIMBLE_ENABLED=y
 # Persist bonding data to NVS so paired devices reconnect after reboot.
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
 
+# Reduce NimBLE log verbosity — default INFO floods the console with
+# "GATT procedure initiated: notify" on every HID report.
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+
 # Console/logs go to USB-Serial-JTAG (the "USB JTAG/serial debug unit" port,
 # same port espflash uses for flashing and monitoring).
 # This frees UART0 (CH343 "USB Single Serial" port) for host data.

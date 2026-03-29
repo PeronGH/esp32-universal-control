@@ -33,34 +33,41 @@ struct MTPoint {
     y: f32,
 }
 
-/// Raw finger data from MultitouchSupport.
-///
-/// Field layout reverse-engineered from OpenMultitouchSupport.
-/// The struct may vary between macOS versions — fields after `size`
-/// are not used and exist only for padding.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-struct MTFinger {
+struct MTVector {
+    position: MTPoint,
+    velocity: MTPoint,
+}
+
+/// Raw finger data from MultitouchSupport.framework.
+///
+/// Layout from `OpenMultitouchSupport` (`OpenMTInternal.h`).
+/// Must be exactly 96 bytes (8-byte aligned due to `timestamp: f64`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct MTTouch {
     frame: i32,
     timestamp: f64,
     identifier: i32,
     state: i32,
-    finger_number: i32,
-    _unknown1: i32,
-    normalized_pos: MTPoint,
-    normalized_vel: MTPoint,
-    _unknown2: f32,
+    finger_id: i32,
+    hand_id: i32,
+    normalized: MTVector,
+    total: f32,
+    pressure: f32,
     angle: f32,
     major_axis: f32,
     minor_axis: f32,
-    _unknown3: MTPoint,
-    _unknown4: f32,
-    _unknown5: f32,
-    size: f32,
-    _pad: [u8; 32],
+    absolute: MTVector,
+    _field14: i32,
+    _field15: i32,
+    density: f32,
 }
 
-type MTContactCallbackFn = unsafe extern "C" fn(MTDeviceRef, *const MTFinger, i32, f64, i32);
+const _: () = assert!(size_of::<MTTouch>() == 96);
+
+type MTContactCallbackFn = unsafe extern "C" fn(MTDeviceRef, *const MTTouch, i32, f64, i32);
 
 // ---------------------------------------------------------------------------
 // PTP coordinate translation constants
@@ -80,14 +87,14 @@ static CLICK_STATE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::
 
 unsafe extern "C" fn mt_callback(
     _device: MTDeviceRef,
-    fingers: *const MTFinger,
-    finger_count: i32,
+    touches: *const MTTouch,
+    touch_count: i32,
     _timestamp: f64,
     _frame: i32,
 ) {
     let Some(tx) = TX.get() else { return };
-    let finger_slice = if finger_count > 0 && !fingers.is_null() {
-        unsafe { std::slice::from_raw_parts(fingers, finger_count as usize) }
+    let touch_slice = if touch_count > 0 && !touches.is_null() {
+        unsafe { std::slice::from_raw_parts(touches, touch_count as usize) }
     } else {
         &[]
     };
@@ -109,16 +116,16 @@ unsafe extern "C" fn mt_callback(
     // confidence only (allows Windows to track approaching fingers
     // for gesture recognition).
     let mut active = 0usize;
-    for f in finger_slice {
+    for t in touch_slice {
         if active >= ptp::MAX_CONTACTS as usize {
             break;
         }
-        if f.state == 4 {
+        if t.state == 4 {
             report.contacts[active] = PtpContact {
                 flags: PtpContact::FINGER_DOWN,
-                contact_id: f.identifier as u32,
-                x: (f.normalized_pos.x * PTP_X_MAX) as u16,
-                y: ((1.0 - f.normalized_pos.y) * PTP_Y_MAX) as u16,
+                contact_id: t.identifier as u32,
+                x: (t.normalized.position.x * PTP_X_MAX) as u16,
+                y: ((1.0 - t.normalized.position.y) * PTP_Y_MAX) as u16,
             };
             active += 1;
         }
