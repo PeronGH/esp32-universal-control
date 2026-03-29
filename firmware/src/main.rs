@@ -1,5 +1,6 @@
 mod ble_hid;
 mod hid_descriptor;
+mod session;
 
 use std::sync::mpsc;
 
@@ -10,6 +11,8 @@ use esp_idf_svc::hal::uart::{self, UartDriver, UartTxDriver};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::{error, info, warn};
 use postcard::accumulator::{CobsAccumulator, FeedResult};
+
+use crate::session::Session;
 
 fn main() {
     esp_idf_svc::sys::link_patches();
@@ -56,21 +59,27 @@ fn run() -> anyhow::Result<()> {
     // receive path (critical at 70 Hz touch input).
     let (tx, rx) = uart.into_split();
 
-    // TX thread: drains BLE events and response messages, writes to UART.
-    let (resp_tx, resp_rx) = mpsc::channel::<FirmwareMsg>();
+    // TX thread: writes host-visible firmware messages to UART.
+    let (tx_msg, tx_rx) = mpsc::channel::<FirmwareMsg>();
     let ble_event_rx = ble.take_event_rx();
     std::thread::Builder::new()
         .name("uart-tx".into())
         .stack_size(4096)
-        .spawn(move || uart_tx_task(tx, ble_event_rx, resp_rx))?;
+        .spawn(move || uart_tx_task(tx, tx_rx))?;
 
     info!("UART0 ready, waiting for host messages…");
+
+    let mut session = Session::new();
 
     // RX loop: reads UART, decodes COBS, dispatches to BLE or queues response.
     let mut cobs_buf: CobsAccumulator<COBS_BUF_SIZE> = CobsAccumulator::new();
     let mut read_buf = [0u8; READ_BUF_SIZE];
 
     loop {
+        while let Ok(event) = ble_event_rx.try_recv() {
+            session.handle_ble_event(&tx_msg, event);
+        }
+
         let n = match rx.read(&mut read_buf, READ_TIMEOUT_TICKS) {
             Ok(n) => n,
             Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_TIMEOUT => continue,
@@ -90,7 +99,7 @@ fn run() -> anyhow::Result<()> {
                     remaining
                 }
                 FeedResult::Success { data, remaining } => {
-                    handle_msg(&ble, &resp_tx, data);
+                    session.handle_host_msg(&ble, &tx_msg, data);
                     remaining
                 }
             };
@@ -98,32 +107,10 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-/// TX thread: sends BLE events and command responses to the host.
-///
-/// Drains from two sources:
-/// - `ble_rx`: proactive BLE events (connect/disconnect, LED state)
-/// - `resp_rx`: responses to host commands (Pong, ConnectionStatus)
-fn uart_tx_task(
-    mut tx: UartTxDriver<'static>,
-    ble_rx: mpsc::Receiver<FirmwareMsg>,
-    resp_rx: mpsc::Receiver<FirmwareMsg>,
-) {
-    loop {
-        let mut sent = false;
-
-        while let Ok(msg) = ble_rx.try_recv() {
-            send(&mut tx, &msg);
-            sent = true;
-        }
-        while let Ok(msg) = resp_rx.try_recv() {
-            send(&mut tx, &msg);
-            sent = true;
-        }
-
-        if !sent {
-            // Nothing pending, sleep briefly to avoid busy-spinning.
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+/// TX thread: sends firmware events and responses to the host over UART.
+fn uart_tx_task(mut tx: UartTxDriver<'static>, rx: mpsc::Receiver<FirmwareMsg>) {
+    while let Ok(msg) = rx.recv() {
+        send(&mut tx, &msg);
     }
 }
 
@@ -146,43 +133,6 @@ fn send(tx: &mut UartTxDriver<'_>, msg: &FirmwareMsg) {
                 warn!("UART write failed: {e}");
                 return;
             }
-        }
-    }
-}
-
-/// Handle a decoded host message. HID reports go directly to BLE.
-/// Responses are queued for the TX thread.
-fn handle_msg(ble: &ble_hid::BleHid, resp_tx: &mpsc::Sender<FirmwareMsg>, msg: HostMsg) {
-    match msg {
-        HostMsg::Keyboard(report) => {
-            if ble.connected() {
-                ble.send_keyboard(&report);
-            }
-        }
-        HostMsg::Consumer(bits) => {
-            if ble.connected() {
-                ble.send_consumer(bits);
-            }
-        }
-        HostMsg::Touch(mut report) => {
-            if ble.connected() {
-                // Cumulative scan_time in 100us units, computed at delivery.
-                // SAFETY: esp_timer_get_time is always safe to call.
-                let us = unsafe { esp_idf_svc::sys::esp_timer_get_time() } as u64;
-                report.scan_time = (us / 100) as u16; // wraps at ~6.5s, expected by PTP
-                ble.send_touch(&report);
-            }
-        }
-        HostMsg::QueryConnections => {
-            for desc in ble.connections() {
-                let _ = resp_tx.send(FirmwareMsg::ConnectionStatus {
-                    addr: desc.address().as_le_bytes(),
-                    connected: true,
-                });
-            }
-        }
-        HostMsg::Ping => {
-            let _ = resp_tx.send(FirmwareMsg::Pong);
         }
     }
 }

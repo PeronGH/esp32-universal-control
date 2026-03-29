@@ -4,6 +4,7 @@
 //! to a remote device. The hot path is lock-free (reads a single AtomicBool).
 //! The mutex is only locked on the rare hotkey press (Ctrl+Opt+1-5).
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -14,13 +15,11 @@ use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 use core_graphics::event::*;
 use log::info;
 
-use esp32_uc_protocol::keyboard::KeyboardReport;
+use esp32_uc_protocol::input::{ConsumerState, KeyboardSnapshot};
 use esp32_uc_protocol::wire::HostMsg;
 
 use super::keymap;
 use crate::slots::SlotTable;
-
-const MAX_KEYS: usize = 6;
 
 /// macOS virtual keycodes for number keys 1-5.
 const MAC_1: u16 = 0x12;
@@ -49,7 +48,7 @@ const MAIN_DISPLAY: u32 = 0;
 
 /// Enable hiding cursor from a background process (private CG API,
 /// same approach as Barrier KVM) and hide the cursor.
-fn hide_mac_cursor() {
+pub fn hide_mac_cursor() {
     unsafe {
         // Allow cursor hide from a non-foreground app.
         let key = core_foundation::string::CFString::new("SetsCursorInBackground");
@@ -63,6 +62,7 @@ fn hide_mac_cursor() {
     }
 }
 
+/// Show the local macOS cursor.
 pub fn show_mac_cursor() {
     unsafe {
         CGDisplayShowCursor(MAIN_DISPLAY);
@@ -78,6 +78,140 @@ fn reenable_tap() {
     }
 }
 
+#[derive(Debug, Default)]
+struct CaptureState {
+    keyboard: KeyboardSnapshot,
+    consumer: ConsumerState,
+    hotkey_keyup: Option<u16>,
+}
+
+impl CaptureState {
+    fn reset_remote_input(&mut self) {
+        self.keyboard = KeyboardSnapshot::default();
+        self.consumer = 0;
+    }
+
+    fn arm_hotkey_keyup(&mut self, keycode: u16) {
+        self.hotkey_keyup = Some(keycode);
+    }
+
+    fn consume_hotkey_keyup(&mut self, keycode: u16) -> bool {
+        if self.hotkey_keyup == Some(keycode) {
+            self.hotkey_keyup = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn handle_key_down(&mut self, event: &CGEvent) -> Option<HostMsg> {
+        let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+        if let Some(bit) = keymap::mac_to_consumer(keycode) {
+            let next = self.consumer | bit;
+            if next != self.consumer {
+                self.consumer = next;
+                return Some(HostMsg::ConsumerState(self.consumer));
+            }
+            return None;
+        }
+
+        let hid = keymap::mac_to_hid(keycode);
+        if hid == 0 {
+            return None;
+        }
+
+        if let Some(mask) = modifier_mask_from_hid(hid) {
+            let next = self.keyboard.modifiers | mask;
+            if next != self.keyboard.modifiers {
+                self.keyboard.modifiers = next;
+                return Some(HostMsg::KeyboardState(self.keyboard));
+            }
+            return None;
+        }
+
+        if self.keyboard.keys.contains(&hid) {
+            return None;
+        }
+
+        if let Some(slot) = self.keyboard.keys.iter_mut().find(|slot| **slot == 0) {
+            *slot = hid;
+            return Some(HostMsg::KeyboardState(self.keyboard));
+        }
+
+        None
+    }
+
+    fn handle_key_up(&mut self, event: &CGEvent) -> Option<HostMsg> {
+        let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+        if let Some(bit) = keymap::mac_to_consumer(keycode) {
+            let next = self.consumer & !bit;
+            if next != self.consumer {
+                self.consumer = next;
+                return Some(HostMsg::ConsumerState(self.consumer));
+            }
+            return None;
+        }
+
+        let hid = keymap::mac_to_hid(keycode);
+        if hid == 0 {
+            return None;
+        }
+
+        if let Some(mask) = modifier_mask_from_hid(hid) {
+            let next = self.keyboard.modifiers & !mask;
+            if next != self.keyboard.modifiers {
+                self.keyboard.modifiers = next;
+                return Some(HostMsg::KeyboardState(self.keyboard));
+            }
+            return None;
+        }
+
+        if let Some(idx) = self
+            .keyboard
+            .keys
+            .iter()
+            .position(|current| *current == hid)
+        {
+            self.keyboard.keys.copy_within((idx + 1).., idx);
+            self.keyboard.keys[self.keyboard.keys.len() - 1] = 0;
+            return Some(HostMsg::KeyboardState(self.keyboard));
+        }
+
+        None
+    }
+
+    fn handle_flags_changed(&mut self, event: &CGEvent) -> Option<HostMsg> {
+        let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+        let mask = keymap::modifier_mask(keycode)?;
+        let pressed = event.get_flags().bits() & generic_modifier_flag(mask) != 0;
+        let next = if pressed {
+            self.keyboard.modifiers | mask
+        } else {
+            self.keyboard.modifiers & !mask
+        };
+        if next != self.keyboard.modifiers {
+            self.keyboard.modifiers = next;
+            Some(HostMsg::KeyboardState(self.keyboard))
+        } else {
+            None
+        }
+    }
+}
+
+fn modifier_mask_from_hid(hid: u8) -> Option<u8> {
+    (0xE0..=0xE7).contains(&hid).then(|| 1 << (hid - 0xE0))
+}
+
+fn generic_modifier_flag(mask: u8) -> u64 {
+    match mask {
+        0x01 | 0x10 => CGEventFlags::CGEventFlagControl.bits(),
+        0x02 | 0x20 => CGEventFlags::CGEventFlagShift.bits(),
+        0x04 | 0x40 => CGEventFlags::CGEventFlagAlternate.bits(),
+        0x08 | 0x80 => CGEventFlags::CGEventFlagCommand.bits(),
+        _ => 0,
+    }
+}
+
 /// Start keyboard + mouse capture. Blocks the calling thread (runs CFRunLoop).
 pub fn run(
     tx: mpsc::Sender<HostMsg>,
@@ -86,6 +220,7 @@ pub fn run(
     slots: Arc<Mutex<SlotTable>>,
 ) -> anyhow::Result<()> {
     info!("Starting keyboard + mouse capture (CGEventTap)");
+    let state = RefCell::new(CaptureState::default());
 
     let tap = CGEventTap::new(
         CGEventTapLocation::HID,
@@ -120,15 +255,21 @@ pub fn run(
 
             // Lock-free: single atomic read, no mutex.
             let fwd = forwarding.load(Ordering::Acquire);
+            if !fwd {
+                state.borrow_mut().reset_remote_input();
+            }
 
             match event_type {
                 CGEventType::KeyDown => {
+                    let keycode =
+                        event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
                     // Hotkeys always processed (locks mutex, but rare).
                     if handle_slot_hotkey(event, &slots, &tx) {
+                        state.borrow_mut().arm_hotkey_keyup(keycode);
                         return CallbackResult::Keep;
                     }
                     if fwd {
-                        if let Some(msg) = translate_key_event(event_type, event) {
+                        if let Some(msg) = state.borrow_mut().handle_key_down(event) {
                             let _ = tx.send(msg);
                         }
                         CallbackResult::Drop
@@ -137,8 +278,13 @@ pub fn run(
                     }
                 }
                 CGEventType::KeyUp => {
+                    let keycode =
+                        event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+                    if state.borrow_mut().consume_hotkey_keyup(keycode) {
+                        return CallbackResult::Keep;
+                    }
                     if fwd {
-                        if let Some(msg) = translate_key_event(event_type, event) {
+                        if let Some(msg) = state.borrow_mut().handle_key_up(event) {
                             let _ = tx.send(msg);
                         }
                         CallbackResult::Drop
@@ -147,7 +293,7 @@ pub fn run(
                     }
                 }
                 CGEventType::FlagsChanged => {
-                    if fwd && let Some(msg) = translate_key_event(event_type, event) {
+                    if fwd && let Some(msg) = state.borrow_mut().handle_flags_changed(event) {
                         let _ = tx.send(msg);
                     }
                     // Always keep modifier changes so Mac stays in sync.
@@ -220,74 +366,32 @@ fn handle_slot_hotkey(
     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
     let table = slots.lock().expect("poisoned");
 
-    // If currently forwarding to remote, release all keys on Windows before switching.
-    let was_forwarding = table.is_forwarding();
-
-    let switched = match keycode {
+    match keycode {
         MAC_1 => {
-            table.switch_to_mac();
-            show_mac_cursor();
-            info!("Switched to Mac (local)");
+            let _ = tx.send(HostMsg::SelectPeer(None));
+            info!("Requested switch to Mac (local)");
             true
         }
-        MAC_2 => table.switch_to_remote(0),
-        MAC_3 => table.switch_to_remote(1),
-        MAC_4 => table.switch_to_remote(2),
-        MAC_5 => table.switch_to_remote(3),
+        MAC_2 if table.has_slot(0) => {
+            let _ = tx.send(HostMsg::SelectPeer(Some(0)));
+            info!("Requested remote slot 0");
+            true
+        }
+        MAC_3 if table.has_slot(1) => {
+            let _ = tx.send(HostMsg::SelectPeer(Some(1)));
+            info!("Requested remote slot 1");
+            true
+        }
+        MAC_4 if table.has_slot(2) => {
+            let _ = tx.send(HostMsg::SelectPeer(Some(2)));
+            info!("Requested remote slot 2");
+            true
+        }
+        MAC_5 if table.has_slot(3) => {
+            let _ = tx.send(HostMsg::SelectPeer(Some(3)));
+            info!("Requested remote slot 3");
+            true
+        }
         _ => false,
-    };
-
-    if switched {
-        // Release all keys on Windows when leaving a remote slot,
-        // or when switching between remote slots.
-        if was_forwarding {
-            let _ = tx.send(HostMsg::Keyboard(KeyboardReport::default()));
-        }
-
-        if table.is_forwarding() {
-            hide_mac_cursor();
-            info!("Switched to remote slot {}", table.active());
-        }
-
-        table.print_status();
-    }
-
-    switched
-}
-
-fn translate_key_event(event_type: CGEventType, event: &CGEvent) -> Option<HostMsg> {
-    let mac_keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-    let flags = event.get_flags();
-    let modifiers = keymap::flags_to_hid_modifiers(flags.bits());
-
-    match event_type {
-        CGEventType::KeyDown => {
-            let hid_key = keymap::mac_to_hid(mac_keycode);
-            if hid_key >= 0xE0 {
-                return None;
-            }
-            Some(HostMsg::Keyboard(KeyboardReport {
-                modifiers,
-                reserved: 0,
-                keycodes: [hid_key, 0, 0, 0, 0, 0],
-            }))
-        }
-        CGEventType::KeyUp => {
-            let hid_key = keymap::mac_to_hid(mac_keycode);
-            if hid_key >= 0xE0 {
-                return None;
-            }
-            Some(HostMsg::Keyboard(KeyboardReport {
-                modifiers,
-                reserved: 0,
-                keycodes: [0; MAX_KEYS],
-            }))
-        }
-        CGEventType::FlagsChanged => Some(HostMsg::Keyboard(KeyboardReport {
-            modifiers,
-            reserved: 0,
-            keycodes: [0; MAX_KEYS],
-        })),
-        _ => None,
     }
 }

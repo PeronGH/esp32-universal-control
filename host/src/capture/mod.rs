@@ -23,30 +23,18 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
 
     let (fw_tx, fw_rx) = mpsc::channel::<FirmwareMsg>();
     serial::spawn_reader(port, fw_tx);
-    serial::handshake(&mut write_port, &fw_rx)?;
+    let snapshot = serial::handshake(&mut write_port, &fw_rx)?;
 
     info!("Real capture mode: forwarding keyboard + trackpad to firmware");
 
-    // Shared slot table, updated by fw-events thread, read by keyboard hotkey.
-    let slots = Arc::new(Mutex::new(SlotTable::new()));
-
-    // Query existing connections so we know about devices that connected
-    // before the host started.
-    serial::send(&mut write_port, &HostMsg::QueryConnections)?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    while let Ok(msg) = fw_rx.try_recv() {
-        if let FirmwareMsg::ConnectionStatus { addr, connected } = msg
-            && connected
-        {
-            let mut table = slots.lock().expect("poisoned");
-            let slot = table.connect(addr);
-            info!(
-                "BLE slot {slot}: {} (already connected)",
-                serial::format_addr(&addr)
-            );
+    let slots = Arc::new(Mutex::new(SlotTable::from_snapshot(&snapshot)));
+    {
+        let table = slots.lock().expect("poisoned");
+        if table.is_forwarding() {
+            keyboard::hide_mac_cursor();
         }
+        table.print_status();
     }
-    slots.lock().expect("poisoned").print_status();
 
     // Channel for captured input events → serial writer.
     let (input_tx, input_rx) = mpsc::channel::<HostMsg>();
@@ -60,7 +48,7 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
             while let Ok(msg) = input_rx.recv() {
                 if let Err(e) = serial::send(&mut writer, &msg) {
                     log::error!("Serial disconnected ({e}), falling back to Mac");
-                    writer_slots.lock().expect("poisoned").switch_to_mac();
+                    writer_slots.lock().expect("poisoned").set_active(None);
                     keyboard::show_mac_cursor();
                     writer_slots.lock().expect("poisoned").print_status();
                     break;
@@ -75,21 +63,54 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
         .spawn(move || {
             while let Ok(msg) = fw_rx.recv() {
                 match msg {
-                    FirmwareMsg::ConnectionStatus { addr, connected } => {
+                    FirmwareMsg::PeerSnapshot(snapshot) => {
                         let mut table = fw_slots.lock().expect("slot table poisoned");
-                        if connected {
-                            let slot = table.connect(addr);
-                            info!("BLE slot {slot}: connected {}", serial::format_addr(&addr));
+                        table.apply_snapshot(&snapshot);
+                        if table.is_forwarding() {
+                            keyboard::hide_mac_cursor();
                         } else {
-                            table.disconnect(addr);
-                            info!("BLE disconnected: {}", serial::format_addr(&addr));
+                            keyboard::show_mac_cursor();
+                        }
+                        table.print_status();
+                    }
+                    FirmwareMsg::PeerConnected(peer) => {
+                        let mut table = fw_slots.lock().expect("slot table poisoned");
+                        table.connect(peer);
+                        info!(
+                            "BLE slot {}: connected {}",
+                            peer.slot,
+                            serial::format_addr(&peer.addr)
+                        );
+                        table.print_status();
+                    }
+                    FirmwareMsg::PeerDisconnected { slot } => {
+                        let mut table = fw_slots.lock().expect("slot table poisoned");
+                        table.disconnect(slot);
+                        keyboard::show_mac_cursor();
+                        info!("BLE slot {slot}: disconnected");
+                        table.print_status();
+                    }
+                    FirmwareMsg::ActivePeerChanged(active_slot) => {
+                        let mut table = fw_slots.lock().expect("slot table poisoned");
+                        table.set_active(active_slot);
+                        if table.is_forwarding() {
+                            keyboard::hide_mac_cursor();
+                            if let Some(slot) = table.active() {
+                                info!("Switched to remote slot {slot}");
+                            }
+                        } else {
+                            keyboard::show_mac_cursor();
+                            info!("Switched to Mac (local)");
                         }
                         table.print_status();
                     }
                     FirmwareMsg::LedState(bits) => {
                         info!("LED state: {bits:#04x}");
                     }
-                    FirmwareMsg::Pong => {}
+                    FirmwareMsg::HelloAck(_) => {}
+                    FirmwareMsg::ProtocolError(err) => {
+                        log::warn!("Firmware protocol error: {err:?}");
+                    }
                 }
             }
         })?;

@@ -1,32 +1,50 @@
-//! Host-side slot table and forwarding state.
-//!
-//! Slots 0-3 track remote BLE devices. A separate `forwarding` flag
-//! controls whether input is sent to a remote device or stays local (Mac).
-//! The firmware has no concept of "Mac"; this is purely host-side.
+//! Host-side mirror of firmware-managed peer slots and forwarding state.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use esp32_uc_protocol::wire::{MAX_PEERS, PeerDescriptor, PeerSnapshot};
 
 use crate::serial;
 
-pub const MAX_SLOTS: usize = 4;
+pub const MAX_SLOTS: usize = MAX_PEERS;
 
-/// Thread-safe slot table with forwarding state.
+/// Thread-safe slot table mirrored from firmware state.
 pub struct SlotTable {
     slots: [Option<[u8; 6]>; MAX_SLOTS],
-    active: AtomicUsize,
-    /// Shared forwarding flag. The CGEventTap callback reads this via
-    /// `Arc<AtomicBool>` without locking the SlotTable mutex.
+    active: Option<usize>,
+    /// Shared forwarding flag. Capture callbacks read this via
+    /// `Arc<AtomicBool>` without locking the `SlotTable` mutex.
     forwarding: Arc<AtomicBool>,
 }
 
 impl SlotTable {
+    /// Create an empty local-only slot table.
     pub fn new() -> Self {
         Self {
             slots: [None; MAX_SLOTS],
-            active: AtomicUsize::new(0),
+            active: None,
             forwarding: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Build a slot table from a firmware snapshot.
+    pub fn from_snapshot(snapshot: &PeerSnapshot) -> Self {
+        let mut table = Self::new();
+        table.apply_snapshot(snapshot);
+        table
+    }
+
+    /// Replace the mirrored state with a fresh firmware snapshot.
+    pub fn apply_snapshot(&mut self, snapshot: &PeerSnapshot) {
+        self.slots = [None; MAX_SLOTS];
+        for peer in snapshot.peers.iter().flatten() {
+            let slot = usize::from(peer.slot);
+            if slot < MAX_SLOTS {
+                self.slots[slot] = Some(peer.addr);
+            }
+        }
+        self.set_active(snapshot.active_slot);
     }
 
     /// Get a clone of the forwarding flag for lock-free reading in callbacks.
@@ -34,54 +52,54 @@ impl SlotTable {
         Arc::clone(&self.forwarding)
     }
 
-    /// Whether input is being forwarded to a remote device.
+    /// Whether input is currently forwarded to a remote peer.
     pub fn is_forwarding(&self) -> bool {
         self.forwarding.load(Ordering::Acquire)
     }
 
-    /// Switch to Mac (local). Stops forwarding.
-    pub fn switch_to_mac(&self) {
-        self.forwarding.store(false, Ordering::Release);
+    /// Whether a slot is currently populated.
+    pub fn has_slot(&self, slot: usize) -> bool {
+        slot < MAX_SLOTS && self.slots[slot].is_some()
     }
 
-    /// Switch to a populated remote slot. Starts forwarding on success.
-    pub fn switch_to_remote(&self, slot: usize) -> bool {
-        if slot < MAX_SLOTS && self.slots[slot].is_some() {
-            self.active.store(slot, Ordering::Relaxed);
-            self.forwarding.store(true, Ordering::Release);
-            true
-        } else {
-            false
+    /// Update one slot from a firmware connect event.
+    pub fn connect(&mut self, peer: PeerDescriptor) {
+        let slot = usize::from(peer.slot);
+        if slot < MAX_SLOTS {
+            self.slots[slot] = Some(peer.addr);
         }
     }
 
-    pub fn active(&self) -> usize {
-        self.active.load(Ordering::Relaxed)
-    }
-
-    pub fn connect(&mut self, addr: [u8; 6]) -> usize {
-        if let Some(i) = self.slots.iter().position(|s| *s == Some(addr)) {
-            return i;
+    /// Clear one slot from a firmware disconnect event.
+    pub fn disconnect(&mut self, slot: u8) {
+        let slot = usize::from(slot);
+        if slot >= MAX_SLOTS {
+            return;
         }
-        if let Some(i) = self.slots.iter().position(|s| s.is_none()) {
-            self.slots[i] = Some(addr);
-            return i;
-        }
-        let active = self.active.load(Ordering::Relaxed);
-        self.slots[active] = Some(addr);
-        active
-    }
 
-    pub fn disconnect(&mut self, addr: [u8; 6]) {
-        if let Some(slot) = self.slots.iter_mut().find(|s| **s == Some(addr)) {
-            *slot = None;
+        self.slots[slot] = None;
+        if self.active == Some(slot) {
+            self.active = None;
+            self.forwarding.store(false, Ordering::Release);
         }
     }
 
-    pub fn set_active(&self, slot: usize) -> bool {
-        self.switch_to_remote(slot)
+    /// Mirror the firmware-selected active slot.
+    pub fn set_active(&mut self, slot: Option<u8>) {
+        let next_active = slot
+            .map(usize::from)
+            .filter(|slot| *slot < MAX_SLOTS && self.slots[*slot].is_some());
+        self.active = next_active;
+        self.forwarding
+            .store(next_active.is_some(), Ordering::Release);
     }
 
+    /// Returns the currently active slot, if any.
+    pub fn active(&self) -> Option<usize> {
+        self.active
+    }
+
+    /// Print current slot and forwarding status.
     pub fn print_status(&self) {
         let forwarding = self.is_forwarding();
         let active = self.active();
@@ -89,7 +107,7 @@ impl SlotTable {
         eprintln!("{mac_marker} Mac (Ctrl+Opt+1)");
         for (i, slot) in self.slots.iter().enumerate() {
             let Some(addr) = slot else { continue };
-            let marker = if forwarding && i == active {
+            let marker = if forwarding && active == Some(i) {
                 "▶"
             } else {
                 " "
@@ -108,23 +126,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refuses_to_forward_to_empty_slot() {
-        let table = SlotTable::new();
+    fn mirrors_snapshot_state() {
+        let mut peers = [None; MAX_SLOTS];
+        peers[1] = Some(PeerDescriptor {
+            slot: 1,
+            addr: [1, 2, 3, 4, 5, 6],
+        });
+        let table = SlotTable::from_snapshot(&PeerSnapshot {
+            peers,
+            active_slot: Some(1),
+        });
 
-        assert!(!table.switch_to_remote(0));
-        assert!(!table.is_forwarding());
-        assert_eq!(table.active(), 0);
+        assert!(table.has_slot(1));
+        assert!(table.is_forwarding());
+        assert_eq!(table.active(), Some(1));
     }
 
     #[test]
-    fn switches_to_populated_slot() {
-        let mut table = SlotTable::new();
-        let addr = [1, 2, 3, 4, 5, 6];
-        let slot = table.connect(addr);
+    fn disconnecting_active_slot_returns_to_local() {
+        let mut peers = [None; MAX_SLOTS];
+        peers[0] = Some(PeerDescriptor {
+            slot: 0,
+            addr: [1, 2, 3, 4, 5, 6],
+        });
+        let mut table = SlotTable::from_snapshot(&PeerSnapshot {
+            peers,
+            active_slot: Some(0),
+        });
 
-        assert_eq!(slot, 0);
-        assert!(table.switch_to_remote(slot));
-        assert!(table.is_forwarding());
-        assert_eq!(table.active(), slot);
+        table.disconnect(0);
+
+        assert!(!table.is_forwarding());
+        assert_eq!(table.active(), None);
+        assert!(!table.has_slot(0));
     }
 }

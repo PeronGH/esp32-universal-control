@@ -4,6 +4,8 @@
 //! (8 bytes). Used by both firmware (BLE HID output) and host (key event
 //! translation over UART).
 
+use crate::input::KeyboardSnapshot;
+
 /// Report ID for the keyboard input/output reports.
 pub const REPORTID_KEYBOARD: u8 = 0x01;
 /// Report ID for the consumer control input report.
@@ -32,6 +34,16 @@ pub struct KeyboardReport {
     pub reserved: u8,
     /// Up to 6 simultaneous key codes (USB HID usage table).
     pub keycodes: [u8; 6],
+}
+
+impl From<KeyboardSnapshot> for KeyboardReport {
+    fn from(snapshot: KeyboardSnapshot) -> Self {
+        Self {
+            modifiers: snapshot.modifiers,
+            reserved: 0,
+            keycodes: snapshot.keys,
+        }
+    }
 }
 
 const _: () = assert!(size_of::<KeyboardReport>() == 8);

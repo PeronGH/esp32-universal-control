@@ -1,37 +1,48 @@
-//! Debug CLI mode: interactive commands for testing firmware communication.
+//! Debug CLI mode: interactive commands for testing semantic firmware traffic.
 
 use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Context;
-use esp32_uc_protocol::keyboard::KeyboardReport;
-use esp32_uc_protocol::ptp::{PtpContact, PtpReport};
+use esp32_uc_protocol::input::{KeyboardSnapshot, TouchContact, TouchFrame};
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 
 use crate::serial;
 use crate::slots::{self, SlotTable};
 
-const QUERY_RESPONSE_TIMEOUT: Duration = Duration::from_millis(300);
+const INPUT_PAUSE: Duration = Duration::from_millis(16);
+const KEY_PAUSE: Duration = Duration::from_millis(10);
 const HID_KEY_A: u8 = 0x04;
 
 fn handle_fw_event(msg: FirmwareMsg, slots: &mut SlotTable) {
     match msg {
-        FirmwareMsg::Pong => {}
-        FirmwareMsg::ConnectionStatus { addr, connected } => {
-            if connected {
-                let slot = slots.connect(addr);
-                println!(
-                    "  [event] slot {slot}: connected {}",
-                    serial::format_addr(&addr)
-                );
-            } else {
-                slots.disconnect(addr);
-                println!("  [event] disconnected {}", serial::format_addr(&addr));
-            }
+        FirmwareMsg::HelloAck(_) => {}
+        FirmwareMsg::PeerSnapshot(snapshot) => {
+            slots.apply_snapshot(&snapshot);
+            println!("  [event] peer snapshot");
+        }
+        FirmwareMsg::PeerConnected(peer) => {
+            slots.connect(peer);
+            println!(
+                "  [event] slot {}: connected {}",
+                peer.slot,
+                serial::format_addr(&peer.addr)
+            );
+        }
+        FirmwareMsg::PeerDisconnected { slot } => {
+            slots.disconnect(slot);
+            println!("  [event] slot {slot}: disconnected");
+        }
+        FirmwareMsg::ActivePeerChanged(active_slot) => {
+            slots.set_active(active_slot);
+            println!("  [event] active slot: {:?}", slots.active());
         }
         FirmwareMsg::LedState(bits) => {
             println!("  [event] LED state: {bits:#04x}");
+        }
+        FirmwareMsg::ProtocolError(err) => {
+            println!("  [event] protocol error: {err:?}");
         }
     }
 }
@@ -43,16 +54,17 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
 
     let (fw_tx, fw_rx) = mpsc::channel::<FirmwareMsg>();
     serial::spawn_reader(port, fw_tx);
-    serial::handshake(&mut write_port, &fw_rx)?;
+    let snapshot = serial::handshake(&mut write_port, &fw_rx)?;
 
-    let mut slots = SlotTable::new();
-    let mut scan_time: u16 = 0;
+    let mut slots = SlotTable::from_snapshot(&snapshot);
+    let mut key_counter: u8 = 0;
 
     println!("Connected to {port_name}");
     println!("  t       = touch sweep");
     println!("  k       = random key");
-    println!("  l       = list connections");
-    println!("  s <N>   = switch active slot");
+    println!("  l       = list mirrored slots");
+    println!("  s <N>   = select remote slot");
+    println!("  m       = switch to Mac/local");
     println!("  q       = quit");
 
     let stdin = io::stdin();
@@ -62,7 +74,7 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
             handle_fw_event(msg, &mut slots);
         }
 
-        print!("[{}] > ", slots.active());
+        print!("[{:?}] > ", slots.active());
         io::stdout().flush()?;
 
         let mut line = String::new();
@@ -77,76 +89,61 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
             "t" => {
                 let mut x: u16 = 5000;
                 while x <= 15_000 {
-                    let report = PtpReport {
-                        contacts: {
-                            let mut c = [PtpContact::default(); 5];
-                            c[0] = PtpContact {
-                                flags: PtpContact::FINGER_DOWN,
-                                contact_id: 1,
-                                x,
-                                y: 6000,
-                            };
-                            c
-                        },
-                        scan_time,
-                        contact_count: 1,
-                        button: 0,
+                    let mut contacts = [TouchContact::default(); 5];
+                    contacts[0] = TouchContact {
+                        contact_id: 1,
+                        x,
+                        y: 6000,
+                        touching: true,
+                        confident: true,
                     };
-                    scan_time = scan_time.wrapping_add(50);
-                    serial::send(&mut write_port, &HostMsg::Touch(report))?;
-                    std::thread::sleep(Duration::from_millis(16));
+                    serial::send(
+                        &mut write_port,
+                        &HostMsg::TouchFrame(TouchFrame {
+                            contacts,
+                            contact_count: 1,
+                            button: false,
+                        }),
+                    )?;
+                    std::thread::sleep(INPUT_PAUSE);
                     x += 200;
                 }
-                let report = PtpReport {
-                    contacts: {
-                        let mut c = [PtpContact::default(); 5];
-                        c[0] = PtpContact {
-                            flags: PtpContact::FINGER_UP,
-                            contact_id: 1,
-                            x: 15_000,
-                            y: 6000,
-                        };
-                        c
-                    },
-                    scan_time,
-                    contact_count: 1,
-                    button: 0,
-                };
-                scan_time = scan_time.wrapping_add(50);
-                serial::send(&mut write_port, &HostMsg::Touch(report))?;
+                serial::send(&mut write_port, &HostMsg::TouchFrame(TouchFrame::default()))?;
                 println!("  touch sweep done");
             }
 
             "k" => {
-                let letter = b'a' + (scan_time as u8 % 26);
-                let keycode = HID_KEY_A + (letter - b'a');
+                let keycode = HID_KEY_A + (key_counter % 26);
+                key_counter = key_counter.wrapping_add(1);
                 serial::send(
                     &mut write_port,
-                    &HostMsg::Keyboard(KeyboardReport {
-                        keycodes: [keycode, 0, 0, 0, 0, 0],
-                        ..KeyboardReport::default()
+                    &HostMsg::KeyboardState(KeyboardSnapshot {
+                        modifiers: 0,
+                        keys: [keycode, 0, 0, 0, 0, 0],
                     }),
                 )?;
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(KEY_PAUSE);
                 serial::send(
                     &mut write_port,
-                    &HostMsg::Keyboard(KeyboardReport::default()),
+                    &HostMsg::KeyboardState(KeyboardSnapshot::default()),
                 )?;
-                println!("  key '{}'", letter as char);
+                println!("  keycode {keycode:#04x}");
             }
 
             "l" => {
-                serial::send(&mut write_port, &HostMsg::QueryConnections)?;
-                while let Ok(msg) = fw_rx.recv_timeout(QUERY_RESPONSE_TIMEOUT) {
-                    handle_fw_event(msg, &mut slots);
-                }
                 slots.print_status();
+            }
+
+            "m" => {
+                serial::send(&mut write_port, &HostMsg::SelectPeer(None))?;
+                println!("  requested local mode");
             }
 
             "s" => {
                 if let Some(n) = parts.get(1).and_then(|s| s.parse::<usize>().ok()) {
-                    if slots.set_active(n) {
-                        println!("  active slot: {n}");
+                    if n < slots::MAX_SLOTS {
+                        serial::send(&mut write_port, &HostMsg::SelectPeer(Some(n as u8)))?;
+                        println!("  requested remote slot: {n}");
                     } else {
                         println!("  slot must be 0..{}", slots::MAX_SLOTS - 1);
                     }

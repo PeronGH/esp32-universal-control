@@ -6,7 +6,7 @@ use std::sync::Arc;
 use esp32_nimble::enums::*;
 use esp32_nimble::utilities::mutex::Mutex;
 use esp32_nimble::{BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice};
-use log::info;
+use log::{info, warn};
 use zerocopy::IntoBytes;
 
 use esp32_uc_protocol::keyboard::{KeyboardReport, REPORTID_CONSUMER, REPORTID_KEYBOARD};
@@ -14,7 +14,6 @@ use esp32_uc_protocol::ptp::{
     self, PtpReport, REPORTID_DEVICE_CAPS, REPORTID_FUNCSWITCH, REPORTID_MULTITOUCH,
     REPORTID_PTPHQA, REPORTID_REPORTMODE,
 };
-use esp32_uc_protocol::wire::FirmwareMsg;
 
 use crate::hid_descriptor;
 
@@ -57,12 +56,23 @@ const PTPHQA_BLOB: [u8; 256] = [
     0xcf, 0x17, 0xb7, 0xb8, 0xf4, 0xe1, 0x33, 0x08, 0x24, 0x8b, 0xc4, 0x43, 0xa5, 0xe5, 0x24, 0xc2,
 ];
 
+/// Internal BLE events emitted by the HID wrapper.
+#[derive(Clone, Copy, Debug)]
+pub enum BleEvent {
+    /// A BLE peer connected.
+    Connected { conn_handle: u16, addr: [u8; 6] },
+    /// A BLE peer disconnected.
+    Disconnected { conn_handle: u16, addr: [u8; 6] },
+    /// Keyboard LED state changed.
+    LedState(u8),
+}
+
 /// Owns the NimBLE HID device and its report characteristics.
 pub struct BleHid {
     keyboard_input: Arc<Mutex<BLECharacteristic>>,
     consumer_input: Arc<Mutex<BLECharacteristic>>,
     touch_input: Arc<Mutex<BLECharacteristic>>,
-    event_rx: Option<mpsc::Receiver<FirmwareMsg>>,
+    event_rx: Option<mpsc::Receiver<BleEvent>>,
 }
 
 impl BleHid {
@@ -77,7 +87,7 @@ impl BleHid {
             .set_io_cap(SecurityIOCap::NoInputNoOutput)
             .resolve_rpa();
 
-        let (event_tx, event_rx) = mpsc::channel::<FirmwareMsg>();
+        let (event_tx, event_rx) = mpsc::channel::<BleEvent>();
 
         let server = device.get_server();
 
@@ -85,17 +95,17 @@ impl BleHid {
         let tx = event_tx.clone();
         server.on_connect(move |_server, desc| {
             info!("BLE connected: {:?}", desc.address());
-            let _ = tx.send(FirmwareMsg::ConnectionStatus {
-                addr: desc.address().as_le_bytes(),
-                connected: true,
+            let _ = tx.send(BleEvent::Connected {
+                conn_handle: desc.conn_handle(),
+                addr: desc.id_address().as_le_bytes(),
             });
         });
         let tx = event_tx.clone();
         server.on_disconnect(move |desc, _reason| {
             info!("BLE disconnected: {:?}", desc.address());
-            let _ = tx.send(FirmwareMsg::ConnectionStatus {
-                addr: desc.address().as_le_bytes(),
-                connected: false,
+            let _ = tx.send(BleEvent::Disconnected {
+                conn_handle: desc.conn_handle(),
+                addr: desc.id_address().as_le_bytes(),
             });
         });
 
@@ -115,7 +125,7 @@ impl BleHid {
         let tx = event_tx;
         keyboard_output.lock().on_write(move |args| {
             if let Some(&bits) = args.recv_data().first() {
-                let _ = tx.send(FirmwareMsg::LedState(bits));
+                let _ = tx.send(BleEvent::LedState(bits));
             }
         });
 
@@ -156,38 +166,31 @@ impl BleHid {
 
     /// Take the BLE event receiver. Must be called exactly once, before
     /// passing to the TX thread.
-    pub fn take_event_rx(&mut self) -> mpsc::Receiver<FirmwareMsg> {
+    pub fn take_event_rx(&mut self) -> mpsc::Receiver<BleEvent> {
         self.event_rx.take().expect("event_rx already taken")
     }
 
-    /// Returns `true` when at least one BLE host is connected.
-    pub fn connected(&self) -> bool {
-        BLEDevice::take().get_server().connected_count() > 0
+    /// Send a keyboard input report to one connected BLE device.
+    pub fn send_keyboard_to(&self, conn_handle: u16, report: &KeyboardReport) {
+        let chr = self.keyboard_input.lock();
+        if let Err(err) = chr.notify_with(report.as_bytes(), conn_handle) {
+            warn!("keyboard notify({conn_handle}) failed: {err:?}");
+        }
     }
 
-    /// Iterate over currently connected BLE peers.
-    pub fn connections(&self) -> impl Iterator<Item = esp32_nimble::BLEConnDesc> + '_ {
-        BLEDevice::take().get_server().connections()
+    /// Send a consumer control input report to one connected BLE device.
+    pub fn send_consumer_to(&self, conn_handle: u16, bits: u16) {
+        let chr = self.consumer_input.lock();
+        if let Err(err) = chr.notify_with(&bits.to_le_bytes(), conn_handle) {
+            warn!("consumer notify({conn_handle}) failed: {err:?}");
+        }
     }
 
-    /// Send a keyboard input report to all connected BLE devices.
-    pub fn send_keyboard(&self, report: &KeyboardReport) {
-        let mut chr = self.keyboard_input.lock();
-        chr.set_value(report.as_bytes());
-        chr.notify();
-    }
-
-    /// Send a consumer control input report to all connected BLE devices.
-    pub fn send_consumer(&self, bits: u16) {
-        let mut chr = self.consumer_input.lock();
-        chr.set_value(&bits.to_le_bytes());
-        chr.notify();
-    }
-
-    /// Send a PTP touch input report to all connected BLE devices.
-    pub fn send_touch(&self, report: &PtpReport) {
-        let mut chr = self.touch_input.lock();
-        chr.set_value(report.as_bytes());
-        chr.notify();
+    /// Send a PTP touch input report to one connected BLE device.
+    pub fn send_touch_to(&self, conn_handle: u16, report: &PtpReport) {
+        let chr = self.touch_input.lock();
+        if let Err(err) = chr.notify_with(report.as_bytes(), conn_handle) {
+            warn!("touch notify({conn_handle}) failed: {err:?}");
+        }
     }
 }

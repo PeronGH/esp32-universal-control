@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
+use esp32_uc_protocol::wire::{FirmwareMsg, Hello, HostMsg, PROTOCOL_VERSION, PeerSnapshot};
 use postcard::accumulator::{CobsAccumulator, FeedResult};
 use serialport5::SerialPort;
 
@@ -65,25 +65,51 @@ pub fn spawn_reader(
     })
 }
 
-/// Send Ping and wait for Pong. Retries up to `HANDSHAKE_RETRIES` times.
+/// Perform the semantic protocol handshake and return the initial peer
+/// snapshot. Retries up to `HANDSHAKE_RETRIES` times.
 pub fn handshake(
     write_port: &mut SerialPort,
     fw_rx: &mpsc::Receiver<FirmwareMsg>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PeerSnapshot> {
     for attempt in 1..=HANDSHAKE_RETRIES {
         eprint!("Handshake attempt {attempt}/{HANDSHAKE_RETRIES}...");
-        send(write_port, &HostMsg::Ping)?;
+        send(
+            write_port,
+            &HostMsg::Hello(Hello {
+                protocol_version: PROTOCOL_VERSION,
+            }),
+        )?;
 
-        match fw_rx.recv_timeout(HANDSHAKE_TIMEOUT) {
-            Ok(FirmwareMsg::Pong) => {
-                eprintln!(" ok");
-                return Ok(());
+        let mut hello_ok = false;
+
+        loop {
+            match fw_rx.recv_timeout(HANDSHAKE_TIMEOUT) {
+                Ok(FirmwareMsg::HelloAck(ack)) => {
+                    if ack.protocol_version != PROTOCOL_VERSION {
+                        bail!(
+                            "protocol mismatch: firmware={}, host={}",
+                            ack.protocol_version,
+                            PROTOCOL_VERSION
+                        );
+                    }
+                    hello_ok = true;
+                }
+                Ok(FirmwareMsg::PeerSnapshot(snapshot)) if hello_ok => {
+                    eprintln!(" ok");
+                    return Ok(snapshot);
+                }
+                Ok(FirmwareMsg::ProtocolError(err)) => {
+                    bail!("firmware rejected handshake: {err:?}");
+                }
+                Ok(other) => eprintln!(" unexpected: {other:?}"),
+                Err(_) => {
+                    eprintln!(" timeout");
+                    break;
+                }
             }
-            Ok(other) => eprintln!(" unexpected: {other:?}"),
-            Err(_) => eprintln!(" timeout"),
         }
     }
-    bail!("firmware did not respond to Ping (wrong port or firmware not running)");
+    bail!("firmware did not complete semantic handshake");
 }
 
 /// Format a BLE address (little-endian bytes) as a colon-separated string.

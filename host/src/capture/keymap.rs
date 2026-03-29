@@ -3,10 +3,30 @@
 //! macOS keycodes are from `core_graphics::event::KeyCode` (Carbon `Events.h`).
 //! USB HID keycodes are from the USB HID Usage Tables (section 10, Keyboard/Keypad).
 
+use esp32_uc_protocol::input::{
+    CONSUMER_MUTE, CONSUMER_VOLUME_DOWN, CONSUMER_VOLUME_UP, ConsumerState,
+};
+
 /// Translate a macOS virtual keycode to a USB HID keycode.
 /// Returns 0 (no key) for unmapped keycodes.
 pub fn mac_to_hid(mac_keycode: u16) -> u8 {
     MAC_TO_HID.get(mac_keycode as usize).copied().unwrap_or(0)
+}
+
+/// Translate a macOS virtual keycode to a semantic consumer usage bit.
+pub fn mac_to_consumer(mac_keycode: u16) -> Option<ConsumerState> {
+    match mac_keycode {
+        0x48 => Some(CONSUMER_VOLUME_UP),
+        0x49 => Some(CONSUMER_VOLUME_DOWN),
+        0x4A => Some(CONSUMER_MUTE),
+        _ => None,
+    }
+}
+
+/// Return the modifier bit represented by this macOS keycode, if any.
+pub fn modifier_mask(mac_keycode: u16) -> Option<u8> {
+    let hid = mac_to_hid(mac_keycode);
+    (0xE0..=0xE7).contains(&hid).then(|| 1 << (hid - 0xE0))
 }
 
 /// macOS virtual keycode (index) → USB HID keycode (value).
@@ -81,28 +101,3 @@ const MAC_TO_HID: [u8; 128] = [
     // 0x7C RightArrow    0x7D DownArrow     0x7E UpArrow       0x7F (unused)
        0x4F,              0x51,              0x52,              0x00,
 ];
-
-/// Translate macOS `CGEventFlags` to USB HID modifier byte.
-///
-/// USB HID modifier bits: 0=LCtrl, 1=LShift, 2=LAlt, 3=LGUI,
-/// 4=RCtrl, 5=RShift, 6=RAlt, 7=RGUI.
-///
-/// macOS `CGEventFlags` doesn't distinguish left/right in the flags
-/// alone, so we rely on the keycode for that. This function handles
-/// the flags-only case (e.g. FlagsChanged events) by mapping to left-side.
-pub fn flags_to_hid_modifiers(flags: u64) -> u8 {
-    let mut m = 0u8;
-    if flags & 0x00040000 != 0 {
-        m |= 0x01;
-    } // Control  → LCtrl
-    if flags & 0x00020000 != 0 {
-        m |= 0x02;
-    } // Shift    → LShift
-    if flags & 0x00080000 != 0 {
-        m |= 0x04;
-    } // Alternate → LAlt
-    if flags & 0x00100000 != 0 {
-        m |= 0x08;
-    } // Command  → LGUI
-    m
-}
