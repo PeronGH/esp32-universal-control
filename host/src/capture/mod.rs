@@ -61,6 +61,7 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
                 if let Err(e) = serial::send(&mut writer, &msg) {
                     log::error!("Serial disconnected ({e}), falling back to Mac");
                     writer_slots.lock().expect("poisoned").switch_to_mac();
+                    let _ = core_graphics::display::CGDisplay::associate_mouse_and_mouse_cursor_position(true);
                     writer_slots.lock().expect("poisoned").print_status();
                     break;
                 }

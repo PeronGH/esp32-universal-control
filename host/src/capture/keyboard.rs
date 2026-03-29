@@ -17,6 +17,8 @@ use log::info;
 use esp32_uc_protocol::keyboard::KeyboardReport;
 use esp32_uc_protocol::wire::HostMsg;
 
+use core_graphics::display::CGDisplay;
+
 use super::keymap;
 use crate::slots::SlotTable;
 
@@ -63,18 +65,8 @@ pub fn run(
             CGEventType::KeyDown,
             CGEventType::KeyUp,
             CGEventType::FlagsChanged,
-            // Mouse (trackpad generates these)
             CGEventType::LeftMouseDown,
             CGEventType::LeftMouseUp,
-            CGEventType::RightMouseDown,
-            CGEventType::RightMouseUp,
-            CGEventType::MouseMoved,
-            CGEventType::LeftMouseDragged,
-            CGEventType::RightMouseDragged,
-            CGEventType::OtherMouseDown,
-            CGEventType::OtherMouseUp,
-            CGEventType::OtherMouseDragged,
-            CGEventType::ScrollWheel,
         ],
         move |_proxy, event_type, event| {
             // Handle tap timeout/disable by re-enabling.
@@ -91,7 +83,6 @@ pub fn run(
             let fwd = forwarding.load(Ordering::Acquire);
 
             match event_type {
-                // Keyboard events
                 CGEventType::KeyDown => {
                     // Hotkeys always processed (locks mutex, but rare).
                     if handle_slot_hotkey(event, &slots) {
@@ -124,31 +115,18 @@ pub fn run(
                     CallbackResult::Keep
                 }
 
-                // Mouse/trackpad events
+                // Click detection for PTP button field.
                 CGEventType::LeftMouseDown => {
                     if fwd {
                         click_state.store(true, Ordering::Release);
-                        CallbackResult::Drop
-                    } else {
-                        CallbackResult::Keep
                     }
+                    CallbackResult::Keep
                 }
                 CGEventType::LeftMouseUp => {
                     click_state.store(false, Ordering::Release);
-                    if fwd {
-                        CallbackResult::Drop
-                    } else {
-                        CallbackResult::Keep
-                    }
+                    CallbackResult::Keep
                 }
-                // All other mouse events: suppress when forwarding.
-                _ => {
-                    if fwd {
-                        CallbackResult::Drop
-                    } else {
-                        CallbackResult::Keep
-                    }
-                }
+                _ => CallbackResult::Keep,
             }
         },
     )
@@ -184,39 +162,44 @@ fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
     let table = slots.lock().expect("poisoned");
 
-    match keycode {
+    let switched = match keycode {
         MAC_1 => {
             table.switch_to_mac();
+            // Reconnect cursor to trackpad.
+            let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
             info!("Switched to Mac (local)");
-            table.print_status();
             true
         }
         MAC_2 => {
             table.switch_to_remote(0);
-            info!("Switched to remote slot 0");
-            table.print_status();
             true
         }
         MAC_3 => {
             table.switch_to_remote(1);
-            info!("Switched to remote slot 1");
-            table.print_status();
             true
         }
         MAC_4 => {
             table.switch_to_remote(2);
-            info!("Switched to remote slot 2");
-            table.print_status();
             true
         }
         MAC_5 => {
             table.switch_to_remote(3);
-            info!("Switched to remote slot 3");
-            table.print_status();
             true
         }
         _ => false,
+    };
+
+    if switched && table.is_forwarding() {
+        // Disconnect cursor from trackpad so Mac cursor freezes.
+        let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(false);
+        info!("Switched to remote slot {}", table.active());
     }
+
+    if switched {
+        table.print_status();
+    }
+
+    switched
 }
 
 fn translate_key_event(event_type: CGEventType, event: &CGEvent) -> Option<HostMsg> {
