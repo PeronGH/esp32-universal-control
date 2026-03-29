@@ -97,6 +97,14 @@ pub fn run(
             CGEventType::FlagsChanged,
             CGEventType::LeftMouseDown,
             CGEventType::LeftMouseUp,
+            CGEventType::RightMouseDown,
+            CGEventType::RightMouseUp,
+            CGEventType::MouseMoved,
+            CGEventType::LeftMouseDragged,
+            CGEventType::RightMouseDragged,
+            CGEventType::OtherMouseDown,
+            CGEventType::OtherMouseUp,
+            CGEventType::OtherMouseDragged,
             CGEventType::ScrollWheel,
         ],
         move |_proxy, event_type, event| {
@@ -112,11 +120,6 @@ pub fn run(
 
             // Lock-free: single atomic read, no mutex.
             let fwd = forwarding.load(Ordering::Acquire);
-
-            // Re-hide cursor if macOS showed it (e.g. after a system gesture).
-            if fwd {
-                hide_mac_cursor();
-            }
 
             match event_type {
                 CGEventType::KeyDown => {
@@ -155,6 +158,8 @@ pub fn run(
                 CGEventType::LeftMouseDown => {
                     if fwd {
                         click_state.store(true, Ordering::Release);
+                    }
+                    if fwd {
                         CallbackResult::Drop
                     } else {
                         CallbackResult::Keep
@@ -168,15 +173,14 @@ pub fn run(
                         CallbackResult::Keep
                     }
                 }
-                // Drop scroll events when forwarding so Mac doesn't scroll.
-                CGEventType::ScrollWheel => {
+                // All other mouse/scroll/drag events: drop when forwarding.
+                _ => {
                     if fwd {
                         CallbackResult::Drop
                     } else {
                         CallbackResult::Keep
                     }
                 }
-                _ => CallbackResult::Keep,
             }
         },
     )
