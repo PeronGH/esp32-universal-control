@@ -121,7 +121,7 @@ fn uart_tx_task(
         }
 
         if !sent {
-            // Nothing to send — sleep briefly to avoid busy-spinning.
+            // Nothing pending, sleep briefly to avoid busy-spinning.
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }

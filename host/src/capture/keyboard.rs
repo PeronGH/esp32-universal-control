@@ -55,7 +55,7 @@ pub fn run(
                     if forwarding {
                         click_state.store(true, Ordering::Release);
                     }
-                    // Never suppress mouse clicks — Mac needs them for UI.
+                    // Never suppress mouse clicks; Mac needs them for UI.
                     CallbackResult::Keep
                 }
                 CGEventType::LeftMouseUp => {
@@ -90,7 +90,7 @@ pub fn run(
                     if forwarding && let Some(msg) = translate_key_event(event_type, event) {
                         let _ = tx.send(msg);
                     }
-                    // Never suppress modifier changes — they need to stay in sync.
+                    // Always let modifier changes through to keep Mac in sync.
                     CallbackResult::Keep
                 }
                 _ => CallbackResult::Keep,
@@ -98,7 +98,7 @@ pub fn run(
         },
     )
     .map_err(|()| {
-        anyhow::anyhow!("Failed to create CGEventTap — is Accessibility permission granted?")
+        anyhow::anyhow!("Failed to create CGEventTap. Is Accessibility permission granted?")
     })?;
 
     let loop_source = tap

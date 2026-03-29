@@ -78,7 +78,7 @@ const PTP_X_MAX: f32 = 20_000.0;
 const PTP_Y_MAX: f32 = 12_000.0;
 
 // ---------------------------------------------------------------------------
-// Global channel — the callback is a C function pointer, can't capture.
+// Global state for the C callback (which can't capture).
 // ---------------------------------------------------------------------------
 
 static TX: std::sync::OnceLock<mpsc::Sender<HostMsg>> = std::sync::OnceLock::new();
@@ -94,7 +94,7 @@ unsafe extern "C" fn mt_callback(
     _timestamp: f64,
     _frame: i32,
 ) {
-    // Skip when targeting Mac — let native trackpad work.
+    // Skip when targeting Mac so the native trackpad works.
     if let Some(slots) = SLOTS.get()
         && !slots.lock().expect("poisoned").is_forwarding()
     {
@@ -200,7 +200,7 @@ pub fn run(
         info!("Started multitouch device {i}");
     }
 
-    // Block forever — callbacks fire on this thread's run loop.
+    // Block forever. Callbacks fire on this thread's run loop.
     // MultitouchSupport uses the current thread's CFRunLoop internally.
     core_foundation::runloop::CFRunLoop::run_current();
 

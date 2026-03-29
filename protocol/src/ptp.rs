@@ -26,9 +26,6 @@ pub const REPORTID_PTPHQA: u8 = 0x08;
 /// Maximum simultaneous contacts reported to Windows.
 pub const MAX_CONTACTS: u8 = 5;
 
-/// Input Mode value Windows writes to select PTP collection.
-pub const INPUT_MODE_PTP: u8 = 0x03;
-
 // ---------------------------------------------------------------------------
 // Input report struct (report ID 0x05, 49 bytes excluding report ID)
 // ---------------------------------------------------------------------------

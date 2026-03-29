@@ -1,10 +1,10 @@
 //! Composite HID report descriptor: keyboard + consumer + PTP.
 //!
 //! Four top-level collections in a single report map:
-//! 1. **Generic Desktop / Keyboard** (report ID 0x01) — standard boot keyboard
-//! 2. **Consumer / Consumer Control** (report ID 0x02) — 16 media keys
-//! 3. **Digitizer / Touch Pad** (report ID 0x05) — 5-finger PTP multitouch
-//! 4. **Digitizer / Configuration** (report ID 0x04/0x06) — PTP input mode + function switch
+//! 1. **Generic Desktop / Keyboard** (report ID 0x01): standard boot keyboard
+//! 2. **Consumer / Consumer Control** (report ID 0x02): 16 media keys
+//! 3. **Digitizer / Touch Pad** (report ID 0x05): 5-finger PTP multitouch
+//! 4. **Digitizer / Configuration** (report ID 0x04/0x06): PTP input mode + function switch
 
 use esp32_nimble::hid::*;
 
@@ -21,7 +21,7 @@ pub use esp32_uc_protocol::ptp::{
 
 /// Keyboard + consumer control HID descriptor fragment.
 ///
-/// From esp32-nimble `ble_keyboard.rs` example — standard boot keyboard
+/// From esp32-nimble `ble_keyboard.rs` example. Standard boot keyboard
 /// layout (8 bytes) plus 16-bit consumer control.
 const KEYBOARD_CONSUMER_DESCRIPTOR: &[u8] = hid!(
     // =========================================================================
@@ -97,7 +97,7 @@ const KEYBOARD_CONSUMER_DESCRIPTOR: &[u8] = hid!(
 );
 
 // ---------------------------------------------------------------------------
-// TLC 3 & 4: PTP touchpad + configuration (raw bytes — needs 4-byte items)
+// TLC 3 & 4: PTP touchpad + configuration (raw bytes, needs 4-byte items)
 // ---------------------------------------------------------------------------
 
 // Sized tag variants for the PTP descriptor (the hid! macro can't encode

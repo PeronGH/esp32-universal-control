@@ -83,7 +83,7 @@ pub fn handshake(
             Err(_) => eprintln!(" timeout"),
         }
     }
-    bail!("firmware did not respond to Ping — wrong port or firmware not running");
+    bail!("firmware did not respond to Ping (wrong port or firmware not running)");
 }
 
 /// Format a BLE address (little-endian bytes) as a colon-separated string.

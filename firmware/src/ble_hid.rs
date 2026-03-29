@@ -130,14 +130,8 @@ impl BleHid {
         device_caps.lock().set_value(&DEVICE_CAPS);
         ptphqa.lock().set_value(&PTPHQA_BLOB);
 
-        // --- Detect host setting Input Mode = 3 (PTP) ------------------------
         input_mode.lock().on_write(|args| {
-            let data = args.recv_data();
-            if data.first() == Some(&ptp::INPUT_MODE_PTP) {
-                info!("*** Host set Input Mode = 3 (PTP) — precision touchpad confirmed ***");
-            } else {
-                info!("Host set Input Mode = {data:02x?}");
-            }
+            info!("Input Mode set to {:02x?}", args.recv_data());
         });
 
         // --- Advertising -----------------------------------------------------

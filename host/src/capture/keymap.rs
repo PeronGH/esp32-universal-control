@@ -88,8 +88,8 @@ const MAC_TO_HID: [u8; 128] = [
 /// 4=RCtrl, 5=RShift, 6=RAlt, 7=RGUI.
 ///
 /// macOS `CGEventFlags` doesn't distinguish left/right in the flags
-/// alone — we rely on the keycode for that. This function handles the
-/// flags-only case (e.g. FlagsChanged events) by mapping to left-side.
+/// alone, so we rely on the keycode for that. This function handles
+/// the flags-only case (e.g. FlagsChanged events) by mapping to left-side.
 pub fn flags_to_hid_modifiers(flags: u64) -> u8 {
     let mut m = 0u8;
     if flags & 0x00040000 != 0 {

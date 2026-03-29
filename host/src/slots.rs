@@ -2,7 +2,7 @@
 //!
 //! Slots 0-3 track remote BLE devices. A separate `forwarding` flag
 //! controls whether input is sent to a remote device or stays local (Mac).
-//! The firmware has no concept of "Mac" — this is purely host-side.
+//! The firmware has no concept of "Mac"; this is purely host-side.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

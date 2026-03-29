@@ -25,9 +25,9 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
     serial::spawn_reader(port, fw_tx);
     serial::handshake(&mut write_port, &fw_rx)?;
 
-    info!("Real capture mode — forwarding keyboard + trackpad to firmware");
+    info!("Real capture mode: forwarding keyboard + trackpad to firmware");
 
-    // Shared slot table — updated by fw-events thread, read by keyboard hotkey.
+    // Shared slot table, updated by fw-events thread, read by keyboard hotkey.
     let slots = Arc::new(Mutex::new(SlotTable::new()));
 
     // Query existing connections so we know about devices that connected
@@ -59,7 +59,7 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
         .spawn(move || {
             while let Ok(msg) = input_rx.recv() {
                 if let Err(e) = serial::send(&mut writer, &msg) {
-                    log::error!("Serial disconnected: {e} — falling back to Mac");
+                    log::error!("Serial disconnected ({e}), falling back to Mac");
                     writer_slots.lock().expect("poisoned").switch_to_mac();
                     writer_slots.lock().expect("poisoned").print_status();
                     break;
