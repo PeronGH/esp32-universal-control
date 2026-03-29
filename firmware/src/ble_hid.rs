@@ -8,11 +8,11 @@ use esp32_nimble::{BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDev
 use log::info;
 use zerocopy::IntoBytes;
 
-use crate::hid_descriptor::{
+use esp32_uc_protocol::hid_descriptor::{
     self, REPORTID_DEVICE_CAPS, REPORTID_FUNCSWITCH, REPORTID_MULTITOUCH, REPORTID_PTPHQA,
     REPORTID_REPORTMODE,
 };
-use crate::ptp::{self, PtpReport};
+use esp32_uc_protocol::ptp::{self, PtpReport};
 
 const DEVICE_NAME: &str = "ESP32 UC PTP";
 

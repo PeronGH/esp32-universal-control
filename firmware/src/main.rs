@@ -1,14 +1,11 @@
 mod ble_hid;
-mod hid_descriptor;
-mod ptp;
 
 use std::time::Duration;
 
+use esp32_uc_protocol::ptp::{PtpContact, PtpReport};
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::{error, info};
-
-use ptp::{PtpContact, PtpReport};
 
 fn main() {
     esp_idf_svc::sys::link_patches();
