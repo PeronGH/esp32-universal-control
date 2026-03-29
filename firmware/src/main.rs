@@ -52,7 +52,12 @@ fn run() -> anyhow::Result<()> {
 
     loop {
         // Timeout read so we can drain BLE events between reads.
-        let n = uart.read(&mut read_buf, READ_TIMEOUT_TICKS)?;
+        // UartDriver::read returns Err(ESP_ERR_TIMEOUT) on timeout, not Ok(0).
+        let n = match uart.read(&mut read_buf, READ_TIMEOUT_TICKS) {
+            Ok(n) => n,
+            Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_TIMEOUT => 0,
+            Err(e) => return Err(e.into()),
+        };
 
         // Forward BLE connection events to host.
         while let Ok(msg) = ble.event_rx.try_recv() {
