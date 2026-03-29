@@ -2,7 +2,7 @@
 //!
 //! Uses `Default` mode to suppress keyboard and mouse events when forwarding
 //! to a remote device. The hot path is lock-free (reads a single AtomicBool).
-//! The mutex is only locked on the rare hotkey press (Ctrl+Opt+1-5).
+//! The mutex is only locked on the rare hotkey press (`Esc+1-5`).
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -27,6 +27,7 @@ const MAC_2: u16 = 0x13;
 const MAC_3: u16 = 0x14;
 const MAC_4: u16 = 0x15;
 const MAC_5: u16 = 0x17;
+const MAC_ESCAPE: u16 = 0x35;
 
 /// Stored mach port ref for re-enabling the tap on TapDisabledByTimeout.
 static TAP_MACH_PORT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
@@ -83,6 +84,7 @@ struct CaptureState {
     keyboard: KeyboardSnapshot,
     consumer: ConsumerState,
     hotkey_keyup: Option<u16>,
+    escape_held: bool,
 }
 
 impl CaptureState {
@@ -106,6 +108,9 @@ impl CaptureState {
 
     fn handle_key_down(&mut self, event: &CGEvent) -> Option<HostMsg> {
         let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+        if keycode == MAC_ESCAPE {
+            self.escape_held = true;
+        }
         if let Some(bit) = keymap::mac_to_consumer(keycode) {
             let next = self.consumer | bit;
             if next != self.consumer {
@@ -143,6 +148,9 @@ impl CaptureState {
 
     fn handle_key_up(&mut self, event: &CGEvent) -> Option<HostMsg> {
         let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+        if keycode == MAC_ESCAPE {
+            self.escape_held = false;
+        }
         if let Some(bit) = keymap::mac_to_consumer(keycode) {
             let next = self.consumer & !bit;
             if next != self.consumer {
@@ -285,7 +293,7 @@ pub fn run(
                     let keycode =
                         event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
                     // Hotkeys always processed (locks mutex, but rare).
-                    if handle_slot_hotkey(event, &slots, &tx) {
+                    if handle_slot_hotkey(event, &state, &slots, &tx) {
                         state.borrow_mut().arm_hotkey_keyup(keycode);
                         return CallbackResult::Keep;
                     }
@@ -372,11 +380,14 @@ pub fn run(
     Ok(())
 }
 
-/// Check if a KeyDown is Ctrl+Opt+1-5. If so, switch target and return true.
-fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>, tx: &Outbox) -> bool {
-    let flags = event.get_flags();
-    let ctrl_opt = CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagAlternate;
-    if !flags.contains(ctrl_opt) {
+/// Check if a KeyDown is `Esc+1-5`. If so, switch target and return true.
+fn handle_slot_hotkey(
+    event: &CGEvent,
+    state: &RefCell<CaptureState>,
+    slots: &Mutex<SlotTable>,
+    tx: &Outbox,
+) -> bool {
+    if !state.borrow().escape_held {
         return false;
     }
 

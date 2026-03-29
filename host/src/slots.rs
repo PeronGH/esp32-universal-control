@@ -104,7 +104,7 @@ impl SlotTable {
         let forwarding = self.is_forwarding();
         let active = self.active();
         let mac_marker = if !forwarding { "▶" } else { " " };
-        eprintln!("{mac_marker} Mac (Ctrl+Opt+1)");
+        eprintln!("{mac_marker} Mac (Esc+1)");
         for (i, slot) in self.slots.iter().enumerate() {
             let Some(addr) = slot else { continue };
             let marker = if forwarding && active == Some(i) {
@@ -114,7 +114,7 @@ impl SlotTable {
             };
             let num = i + 2;
             eprintln!(
-                "{marker} slot {i}: {} (Ctrl+Opt+{num})",
+                "{marker} slot {i}: {} (Esc+{num})",
                 serial::format_addr(addr)
             );
         }

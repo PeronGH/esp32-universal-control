@@ -24,11 +24,11 @@ The host binary needs two macOS permissions (System Settings > Privacy & Securit
 
 | Shortcut | Target |
 |---|---|
-| Ctrl+Opt+1 | Mac (default) |
-| Ctrl+Opt+2 | Remote slot 0 |
-| Ctrl+Opt+3 | Remote slot 1 |
-| Ctrl+Opt+4 | Remote slot 2 |
-| Ctrl+Opt+5 | Remote slot 3 |
+| Esc+1 | Mac (default) |
+| Esc+2 | Remote slot 0 |
+| Esc+3 | Remote slot 1 |
+| Esc+4 | Remote slot 2 |
+| Esc+5 | Remote slot 3 |
 
 When forwarding to a remote device, keyboard and mouse input is suppressed on Mac. If the ESP32 disconnects, input reverts to Mac automatically.
 
