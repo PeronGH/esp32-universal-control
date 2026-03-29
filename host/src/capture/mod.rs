@@ -114,7 +114,8 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
         })?;
 
     // Trackpad capture on this thread.
-    trackpad::run(input_tx, click_state, slots)?;
+    let tp_fwd = Arc::clone(&forwarding);
+    trackpad::run(input_tx, click_state, tp_fwd)?;
 
     Ok(())
 }

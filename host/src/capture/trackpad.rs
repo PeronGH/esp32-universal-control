@@ -83,8 +83,7 @@ const PTP_Y_MAX: f32 = 12_000.0;
 
 static TX: std::sync::OnceLock<mpsc::Sender<HostMsg>> = std::sync::OnceLock::new();
 static CLICK_STATE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
-static SLOTS: std::sync::OnceLock<Arc<std::sync::Mutex<crate::slots::SlotTable>>> =
-    std::sync::OnceLock::new();
+static FORWARDING: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 /// Track whether the previous frame had active contacts, so we send
 /// exactly one lift report when all fingers leave.
 static HAD_CONTACTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -96,10 +95,7 @@ unsafe extern "C" fn mt_callback(
     _timestamp: f64,
     _frame: i32,
 ) -> i32 {
-    // When targeting Mac, pass through to system (return 0).
-    let forwarding = SLOTS
-        .get()
-        .is_some_and(|s| s.lock().expect("poisoned").is_forwarding());
+    let forwarding = FORWARDING.get().is_some_and(|f| f.load(Ordering::Acquire));
     if !forwarding {
         return 0;
     }
@@ -159,7 +155,7 @@ unsafe extern "C" fn mt_callback(
 pub fn run(
     tx: mpsc::Sender<HostMsg>,
     click: Arc<AtomicBool>,
-    slots: Arc<std::sync::Mutex<crate::slots::SlotTable>>,
+    forwarding: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     info!("Starting trackpad capture (MultitouchSupport.framework)");
 
@@ -168,9 +164,9 @@ pub fn run(
     CLICK_STATE
         .set(click)
         .map_err(|_| anyhow::anyhow!("trackpad click state already initialized"))?;
-    SLOTS
-        .set(slots)
-        .map_err(|_| anyhow::anyhow!("trackpad slots already initialized"))?;
+    FORWARDING
+        .set(forwarding)
+        .map_err(|_| anyhow::anyhow!("trackpad forwarding already initialized"))?;
 
     let lib = unsafe {
         libloading::Library::new(
