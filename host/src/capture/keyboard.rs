@@ -6,7 +6,6 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use core_foundation::base::TCFType;
@@ -19,6 +18,7 @@ use esp32_uc_protocol::input::{ConsumerState, KeyboardSnapshot};
 use esp32_uc_protocol::wire::HostMsg;
 
 use super::keymap;
+use super::outbox::Outbox;
 use crate::slots::SlotTable;
 
 /// macOS virtual keycodes for number keys 1-5.
@@ -214,7 +214,7 @@ fn generic_modifier_flag(mask: u8) -> u64 {
 
 /// Start keyboard + mouse capture. Blocks the calling thread (runs CFRunLoop).
 pub fn run(
-    tx: mpsc::Sender<HostMsg>,
+    tx: Arc<Outbox>,
     click_state: Arc<AtomicBool>,
     forwarding: Arc<AtomicBool>,
     slots: Arc<Mutex<SlotTable>>,
@@ -270,7 +270,7 @@ pub fn run(
                     }
                     if fwd {
                         if let Some(msg) = state.borrow_mut().handle_key_down(event) {
-                            let _ = tx.send(msg);
+                            tx.push(msg);
                         }
                         CallbackResult::Drop
                     } else {
@@ -285,7 +285,7 @@ pub fn run(
                     }
                     if fwd {
                         if let Some(msg) = state.borrow_mut().handle_key_up(event) {
-                            let _ = tx.send(msg);
+                            tx.push(msg);
                         }
                         CallbackResult::Drop
                     } else {
@@ -294,7 +294,7 @@ pub fn run(
                 }
                 CGEventType::FlagsChanged => {
                     if fwd && let Some(msg) = state.borrow_mut().handle_flags_changed(event) {
-                        let _ = tx.send(msg);
+                        tx.push(msg);
                     }
                     // Always keep modifier changes so Mac stays in sync.
                     CallbackResult::Keep
@@ -352,11 +352,7 @@ pub fn run(
 }
 
 /// Check if a KeyDown is Ctrl+Opt+1-5. If so, switch target and return true.
-fn handle_slot_hotkey(
-    event: &CGEvent,
-    slots: &Mutex<SlotTable>,
-    tx: &mpsc::Sender<HostMsg>,
-) -> bool {
+fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>, tx: &Outbox) -> bool {
     let flags = event.get_flags();
     let ctrl_opt = CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagAlternate;
     if !flags.contains(ctrl_opt) {
@@ -368,27 +364,27 @@ fn handle_slot_hotkey(
 
     match keycode {
         MAC_1 => {
-            let _ = tx.send(HostMsg::SelectPeer(None));
+            tx.push(HostMsg::SelectPeer(None));
             info!("Requested switch to Mac (local)");
             true
         }
         MAC_2 if table.has_slot(0) => {
-            let _ = tx.send(HostMsg::SelectPeer(Some(0)));
+            tx.push(HostMsg::SelectPeer(Some(0)));
             info!("Requested remote slot 0");
             true
         }
         MAC_3 if table.has_slot(1) => {
-            let _ = tx.send(HostMsg::SelectPeer(Some(1)));
+            tx.push(HostMsg::SelectPeer(Some(1)));
             info!("Requested remote slot 1");
             true
         }
         MAC_4 if table.has_slot(2) => {
-            let _ = tx.send(HostMsg::SelectPeer(Some(2)));
+            tx.push(HostMsg::SelectPeer(Some(2)));
             info!("Requested remote slot 2");
             true
         }
         MAC_5 if table.has_slot(3) => {
-            let _ = tx.send(HostMsg::SelectPeer(Some(3)));
+            tx.push(HostMsg::SelectPeer(Some(3)));
             info!("Requested remote slot 3");
             true
         }

@@ -8,7 +8,6 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 
 use core_foundation::array::CFArrayGetCount;
 use core_foundation::array::CFArrayGetValueAtIndex;
@@ -16,6 +15,8 @@ use log::info;
 
 use esp32_uc_protocol::input::{TouchContact, TouchFrame};
 use esp32_uc_protocol::wire::HostMsg;
+
+use super::outbox::Outbox;
 
 type MTDeviceRef = *mut c_void;
 type CFArrayRef = *const c_void;
@@ -68,7 +69,7 @@ const PTP_X_MAX: f32 = 20_000.0;
 const PTP_Y_MAX: f32 = 12_000.0;
 const TOUCHING_STATE: i32 = 4;
 
-static TX: std::sync::OnceLock<mpsc::Sender<HostMsg>> = std::sync::OnceLock::new();
+static TX: std::sync::OnceLock<Arc<Outbox>> = std::sync::OnceLock::new();
 static CLICK_STATE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 static FORWARDING: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 static HAD_CONTACTS: AtomicBool = AtomicBool::new(false);
@@ -131,9 +132,9 @@ unsafe extern "C" fn mt_callback(
 
     if frame.contact_count > 0 {
         HAD_CONTACTS.store(true, Ordering::Relaxed);
-        let _ = tx.send(HostMsg::TouchFrame(frame));
+        tx.push(HostMsg::TouchFrame(frame));
     } else if HAD_CONTACTS.swap(false, Ordering::Relaxed) {
-        let _ = tx.send(HostMsg::TouchFrame(frame));
+        tx.push(HostMsg::TouchFrame(frame));
     }
 
     1
@@ -141,7 +142,7 @@ unsafe extern "C" fn mt_callback(
 
 /// Start trackpad capture. Blocks the calling thread.
 pub fn run(
-    tx: mpsc::Sender<HostMsg>,
+    tx: Arc<Outbox>,
     click: Arc<AtomicBool>,
     forwarding: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {

@@ -2,6 +2,7 @@
 
 mod keyboard;
 mod keymap;
+mod outbox;
 mod trackpad;
 
 use std::sync::atomic::AtomicBool;
@@ -12,6 +13,7 @@ use anyhow::Context;
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 use log::info;
 
+use self::outbox::Outbox;
 use crate::serial;
 use crate::slots::SlotTable;
 
@@ -36,16 +38,17 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
         table.print_status();
     }
 
-    // Channel for captured input events → serial writer.
-    let (input_tx, input_rx) = mpsc::channel::<HostMsg>();
+    let outbox = Arc::new(Outbox::new());
 
     // Serial writer thread. On disconnect, forces back to Mac.
     let mut writer = write_port;
     let writer_slots = Arc::clone(&slots);
+    let writer_outbox = Arc::clone(&outbox);
     std::thread::Builder::new()
         .name("serial-writer".into())
         .spawn(move || {
-            while let Ok(msg) = input_rx.recv() {
+            loop {
+                let msg: HostMsg = writer_outbox.recv();
                 if let Err(e) = serial::send(&mut writer, &msg) {
                     log::error!("Serial disconnected ({e}), falling back to Mac");
                     writer_slots.lock().expect("poisoned").set_active(None);
@@ -122,21 +125,21 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
     let click_state = Arc::new(AtomicBool::new(false));
 
     // Keyboard + mouse capture thread.
-    let kb_tx = input_tx.clone();
     let click = Arc::clone(&click_state);
     let kb_fwd = Arc::clone(&forwarding);
     let kb_slots = Arc::clone(&slots);
+    let kb_outbox = Arc::clone(&outbox);
     std::thread::Builder::new()
         .name("keyboard".into())
         .spawn(move || {
-            if let Err(e) = keyboard::run(kb_tx, click, kb_fwd, kb_slots) {
+            if let Err(e) = keyboard::run(kb_outbox, click, kb_fwd, kb_slots) {
                 log::error!("Keyboard capture failed: {e}");
             }
         })?;
 
     // Trackpad capture on this thread.
     let tp_fwd = Arc::clone(&forwarding);
-    trackpad::run(input_tx, click_state, tp_fwd)?;
+    trackpad::run(outbox, click_state, tp_fwd)?;
 
     Ok(())
 }
