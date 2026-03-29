@@ -92,12 +92,12 @@ pub fn run(
         CGEventTapPlacement::HeadInsertEventTap,
         CGEventTapOptions::Default,
         vec![
-            // Keyboard
             CGEventType::KeyDown,
             CGEventType::KeyUp,
             CGEventType::FlagsChanged,
             CGEventType::LeftMouseDown,
             CGEventType::LeftMouseUp,
+            CGEventType::ScrollWheel,
         ],
         move |_proxy, event_type, event| {
             // Handle tap timeout/disable by re-enabling.
@@ -112,6 +112,11 @@ pub fn run(
 
             // Lock-free: single atomic read, no mutex.
             let fwd = forwarding.load(Ordering::Acquire);
+
+            // Re-hide cursor if macOS showed it (e.g. after a system gesture).
+            if fwd {
+                hide_mac_cursor();
+            }
 
             match event_type {
                 CGEventType::KeyDown => {
@@ -157,6 +162,14 @@ pub fn run(
                 }
                 CGEventType::LeftMouseUp => {
                     click_state.store(false, Ordering::Release);
+                    if fwd {
+                        CallbackResult::Drop
+                    } else {
+                        CallbackResult::Keep
+                    }
+                }
+                // Drop scroll events when forwarding so Mac doesn't scroll.
+                CGEventType::ScrollWheel => {
                     if fwd {
                         CallbackResult::Drop
                     } else {
