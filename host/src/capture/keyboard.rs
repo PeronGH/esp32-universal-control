@@ -8,7 +8,7 @@
 
 use std::sync::mpsc;
 
-use core_foundation::runloop::CFRunLoop;
+use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 use core_graphics::event::*;
 use log::{info, warn};
 
@@ -46,6 +46,15 @@ pub fn run(tx: mpsc::Sender<HostMsg>) -> anyhow::Result<()> {
     .map_err(|()| {
         anyhow::anyhow!("Failed to create CGEventTap — is Accessibility permission granted?")
     })?;
+
+    // Add the tap's mach port as a source on the current run loop.
+    // CGEventTap::new() creates the tap but does NOT add it to any
+    // run loop — without this, events never arrive.
+    let loop_source = tap
+        .mach_port()
+        .create_runloop_source(0)
+        .expect("Failed to create run loop source from event tap");
+    CFRunLoop::get_current().add_source(&loop_source, unsafe { kCFRunLoopCommonModes });
 
     tap.enable();
     info!("CGEventTap enabled, running CFRunLoop");
