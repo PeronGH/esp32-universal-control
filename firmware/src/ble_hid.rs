@@ -19,11 +19,18 @@ use esp32_uc_protocol::wire::FirmwareMsg;
 use crate::hid_descriptor;
 
 const DEVICE_NAME: &str = "ESP32 UC";
+/// BLE appearance: Generic HID (Bluetooth SIG assigned number).
 const APPEARANCE_HID: u16 = 0x03C0;
+/// PnP vendor ID source: USB Implementers Forum.
 const PNP_SIG_USB: u8 = 0x02;
 const VENDOR_ID: u16 = 0x05AC;
 const PRODUCT_ID: u16 = 0x0001;
 const DEVICE_VERSION: u16 = 0x0100;
+/// HID country code: not localized.
+const HID_COUNTRY_NOT_LOCALIZED: u8 = 0x00;
+/// HID flags: normally connectable.
+const HID_FLAGS_NORMALLY_CONNECTABLE: u8 = 0x01;
+const BATTERY_LEVEL_FULL: u8 = 100;
 
 /// Device Capabilities feature report (report ID 0x07).
 const DEVICE_CAPS: [u8; 2] = [ptp::MAX_CONTACTS, 0x00 /* clickpad */];
@@ -116,8 +123,8 @@ impl BleHid {
         hid.report_map(hid_descriptor::COMPOSITE_REPORT_DESCRIPTOR);
         hid.manufacturer("esp32-universal-control");
         hid.pnp(PNP_SIG_USB, VENDOR_ID, PRODUCT_ID, DEVICE_VERSION);
-        hid.hid_info(0x00, 0x01);
-        hid.set_battery_level(100);
+        hid.hid_info(HID_COUNTRY_NOT_LOCALIZED, HID_FLAGS_NORMALLY_CONNECTABLE);
+        hid.set_battery_level(BATTERY_LEVEL_FULL);
 
         // --- Pre-load feature reports ----------------------------------------
         device_caps.lock().set_value(&DEVICE_CAPS);

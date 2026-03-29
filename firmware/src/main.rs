@@ -21,9 +21,14 @@ fn main() {
     }
 }
 
-/// 50 ms read timeout in FreeRTOS ticks.
-/// ESP-IDF default CONFIG_FREERTOS_HZ = 100 → 10 ms/tick → 5 ticks = 50 ms.
+/// UART read timeout: 50 ms in FreeRTOS ticks (CONFIG_FREERTOS_HZ = 100).
 const READ_TIMEOUT_TICKS: u32 = 5;
+/// Maximum postcard+COBS message size we can receive.
+const COBS_BUF_SIZE: usize = 128;
+/// UART read chunk size.
+const READ_BUF_SIZE: usize = 64;
+/// Encode buffer for outgoing FirmwareMsg.
+const ENCODE_BUF_SIZE: usize = 64;
 
 fn run() -> anyhow::Result<()> {
     info!("esp32-universal-control starting");
@@ -47,8 +52,8 @@ fn run() -> anyhow::Result<()> {
 
     info!("UART0 ready, waiting for host messages…");
 
-    let mut cobs_buf: CobsAccumulator<128> = CobsAccumulator::new();
-    let mut read_buf = [0u8; 64];
+    let mut cobs_buf: CobsAccumulator<COBS_BUF_SIZE> = CobsAccumulator::new();
+    let mut read_buf = [0u8; READ_BUF_SIZE];
 
     loop {
         let n = match uart.read(&mut read_buf, READ_TIMEOUT_TICKS) {
@@ -89,7 +94,7 @@ fn run() -> anyhow::Result<()> {
 
 /// Send a `FirmwareMsg` to the host over UART0, handling partial writes.
 fn send_to_host(uart: &UartDriver<'_>, msg: &FirmwareMsg) {
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; ENCODE_BUF_SIZE];
     let encoded = match postcard::to_slice_cobs(msg, &mut buf) {
         Ok(encoded) => encoded,
         Err(e) => {

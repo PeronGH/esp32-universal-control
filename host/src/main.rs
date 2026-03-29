@@ -9,6 +9,16 @@ use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 use serialport5::SerialPort;
 
 const MAX_SLOTS: usize = 4;
+const BAUD_RATE: u32 = 115_200;
+const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(100);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
+const HANDSHAKE_RETRIES: u32 = 5;
+const QUERY_RESPONSE_TIMEOUT: Duration = Duration::from_millis(300);
+const COBS_BUF_SIZE: usize = 128;
+const ENCODE_BUF_SIZE: usize = 128;
+
+/// USB HID keycode for 'a' (usage table 0x04..0x1D = a..z).
+const HID_KEY_A: u8 = 0x04;
 
 /// Host-side slot table. Maps slots to BLE addresses.
 /// The firmware has no concept of slots — this is entirely host-side.
@@ -69,7 +79,7 @@ fn format_addr(addr: &[u8; 6]) -> String {
 
 /// Encode a `HostMsg` and write it to the serial port.
 fn send(port: &mut SerialPort, msg: &HostMsg) -> anyhow::Result<()> {
-    let mut buf = [0u8; 128];
+    let mut buf = [0u8; ENCODE_BUF_SIZE];
     let encoded = postcard::to_slice_cobs(msg, &mut buf).context("postcard encode")?;
     port.write_all(encoded).context("serial write")?;
     Ok(())
@@ -79,7 +89,7 @@ fn send(port: &mut SerialPort, msg: &HostMsg) -> anyhow::Result<()> {
 fn spawn_reader(mut port: SerialPort, tx: mpsc::Sender<FirmwareMsg>) {
     std::thread::spawn(move || {
         use postcard::accumulator::{CobsAccumulator, FeedResult};
-        let mut cobs_buf: CobsAccumulator<128> = CobsAccumulator::new();
+        let mut cobs_buf: CobsAccumulator<COBS_BUF_SIZE> = CobsAccumulator::new();
         let mut read_buf = [0u8; 64];
 
         loop {
@@ -109,11 +119,11 @@ fn handshake(
     write_port: &mut SerialPort,
     fw_rx: &mpsc::Receiver<FirmwareMsg>,
 ) -> anyhow::Result<()> {
-    for attempt in 1..=5 {
-        eprint!("Handshake attempt {attempt}/5...");
+    for attempt in 1..=HANDSHAKE_RETRIES {
+        eprint!("Handshake attempt {attempt}/{HANDSHAKE_RETRIES}...");
         send(write_port, &HostMsg::Ping)?;
 
-        match fw_rx.recv_timeout(Duration::from_secs(1)) {
+        match fw_rx.recv_timeout(HANDSHAKE_TIMEOUT) {
             Ok(FirmwareMsg::Pong) => {
                 eprintln!(" ok");
                 return Ok(());
@@ -150,8 +160,8 @@ fn run() -> anyhow::Result<()> {
         .context("usage: esp32-uc-host <serial-port>")?;
 
     let port = SerialPort::builder()
-        .baud_rate(115_200)
-        .read_timeout(Some(Duration::from_millis(100)))
+        .baud_rate(BAUD_RATE)
+        .read_timeout(Some(SERIAL_READ_TIMEOUT))
         .open(&port_name)
         .with_context(|| format!("open {port_name}"))?;
 
@@ -226,7 +236,7 @@ fn run() -> anyhow::Result<()> {
 
             "k" => {
                 let letter = b'a' + (scan_time as u8 % 26);
-                let keycode = 0x04 + (letter - b'a');
+                let keycode = HID_KEY_A + (letter - b'a');
                 send(
                     &mut write_port,
                     &HostMsg::Keyboard(KeyboardReport {
@@ -245,7 +255,7 @@ fn run() -> anyhow::Result<()> {
             "l" => {
                 send(&mut write_port, &HostMsg::QueryConnections)?;
                 // Collect responses with timeout instead of fixed sleep.
-                while let Ok(msg) = fw_rx.recv_timeout(Duration::from_millis(300)) {
+                while let Ok(msg) = fw_rx.recv_timeout(QUERY_RESPONSE_TIMEOUT) {
                     handle_fw_event(msg, &mut slots);
                 }
                 slots.print();
