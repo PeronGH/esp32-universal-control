@@ -103,6 +103,7 @@ unsafe extern "C" fn mt_callback(
         return 0;
     }
     let Some(tx) = TX.get() else { return 0 };
+
     let touch_slice = if touch_count > 0 && !touches.is_null() {
         unsafe { std::slice::from_raw_parts(touches, touch_count as usize) }
     } else {
