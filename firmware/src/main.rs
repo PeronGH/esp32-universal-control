@@ -8,6 +8,7 @@ use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 use esp_idf_svc::hal::gpio;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::uart::{self, UartDriver, UartTxDriver};
+use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::{error, info, warn};
 use postcard::accumulator::{CobsAccumulator, FeedResult};
@@ -28,6 +29,8 @@ fn main() {
 
 /// UART read timeout: 50 ms in FreeRTOS ticks (CONFIG_FREERTOS_HZ = 100).
 const READ_TIMEOUT_TICKS: u32 = 5;
+/// Host↔firmware UART baud rate.
+const UART_BAUD_RATE: u32 = 921_600;
 /// Maximum postcard+COBS message size we can receive.
 const COBS_BUF_SIZE: usize = 128;
 /// UART read chunk size.
@@ -52,7 +55,7 @@ fn run() -> anyhow::Result<()> {
         peripherals.pins.gpio44,
         Option::<gpio::AnyIOPin>::None,
         Option::<gpio::AnyIOPin>::None,
-        &uart::config::Config::new(),
+        &uart::config::Config::new().baudrate(Hertz(UART_BAUD_RATE)),
     )?;
 
     // Split into independent TX/RX so writing responses never blocks the

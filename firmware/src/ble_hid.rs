@@ -30,6 +30,12 @@ const HID_COUNTRY_NOT_LOCALIZED: u8 = 0x00;
 /// HID flags: normally connectable.
 const HID_FLAGS_NORMALLY_CONNECTABLE: u8 = 0x01;
 const BATTERY_LEVEL_FULL: u8 = 100;
+/// Request a 7.5 ms BLE connection interval for high-rate pointer/touch input.
+const FAST_CONN_INTERVAL: u16 = 6;
+/// No slave latency for interactive input devices.
+const FAST_CONN_LATENCY: u16 = 0;
+/// 600 ms supervision timeout in 10 ms units.
+const FAST_CONN_TIMEOUT: u16 = 60;
 
 /// Device Capabilities feature report (report ID 0x07).
 const DEVICE_CAPS: [u8; 2] = [ptp::MAX_CONTACTS, 0x00 /* clickpad */];
@@ -93,8 +99,20 @@ impl BleHid {
 
         // --- BLE connection event callbacks -----------------------------------
         let tx = event_tx.clone();
-        server.on_connect(move |_server, desc| {
+        server.on_connect(move |server, desc| {
             info!("BLE connected: {:?}", desc.address());
+            if let Err(err) = server.update_conn_params(
+                desc.conn_handle(),
+                FAST_CONN_INTERVAL,
+                FAST_CONN_INTERVAL,
+                FAST_CONN_LATENCY,
+                FAST_CONN_TIMEOUT,
+            ) {
+                warn!(
+                    "failed to request fast conn params for {}: {err:?}",
+                    desc.conn_handle()
+                );
+            }
             let _ = tx.send(BleEvent::Connected {
                 conn_handle: desc.conn_handle(),
                 addr: desc.id_address().as_le_bytes(),
