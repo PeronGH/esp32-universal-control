@@ -164,8 +164,27 @@ fn handle_msg(ble: &ble_hid::BleHid, resp_tx: &mpsc::Sender<FirmwareMsg>, msg: H
                 ble.send_consumer(bits);
             }
         }
-        HostMsg::Touch(report) => {
+        HostMsg::Touch(mut report) => {
             if ble.connected() {
+                // Rewrite scan_time with firmware-side delivery timing.
+                // Windows uses scan_time to compute contact velocity for
+                // scroll inertia. Using the Mac-side timestamp causes jitter
+                // because transport latency is variable.
+                // Match imbushuo/mac-precision-touchpad: scan_time = delta
+                // between reports in 100us units, capped at 0xFF.
+                // esp_timer_get_time() returns i64 microseconds. We only need
+                // the delta in 100us units (max 0xFF = 25.5ms), so truncating
+                // to u32 is safe (wraps every ~71 minutes, delta is always small).
+                static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                // SAFETY: esp_timer_get_time is always safe to call.
+                let now = (unsafe { esp_idf_svc::sys::esp_timer_get_time() } / 100) as u32;
+                let last = LAST.swap(now, std::sync::atomic::Ordering::Relaxed);
+                let delta = if last > 0 {
+                    now.wrapping_sub(last).min(0xFF) as u16
+                } else {
+                    0
+                };
+                report.scan_time = delta;
                 ble.send_touch(&report);
             }
         }
