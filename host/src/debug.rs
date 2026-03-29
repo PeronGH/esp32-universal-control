@@ -10,61 +10,17 @@ use esp32_uc_protocol::ptp::{PtpContact, PtpReport};
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 
 use crate::serial;
+use crate::slots::{self, SlotTable};
 
-const MAX_SLOTS: usize = 4;
 const QUERY_RESPONSE_TIMEOUT: Duration = Duration::from_millis(300);
-/// USB HID keycode for 'a' (usage table 0x04..0x1D = a..z).
 const HID_KEY_A: u8 = 0x04;
-
-/// Host-side slot table. Maps slots to BLE addresses.
-struct SlotTable {
-    slots: [Option<[u8; 6]>; MAX_SLOTS],
-    active: usize,
-}
-
-impl SlotTable {
-    fn new() -> Self {
-        Self {
-            slots: [None; MAX_SLOTS],
-            active: 0,
-        }
-    }
-
-    fn assign(&mut self, addr: [u8; 6]) -> usize {
-        if let Some(i) = self.slots.iter().position(|s| *s == Some(addr)) {
-            return i;
-        }
-        if let Some(i) = self.slots.iter().position(|s| s.is_none()) {
-            self.slots[i] = Some(addr);
-            return i;
-        }
-        self.slots[self.active] = Some(addr);
-        self.active
-    }
-
-    fn disconnect(&mut self, addr: [u8; 6]) {
-        if let Some(slot) = self.slots.iter_mut().find(|s| **s == Some(addr)) {
-            *slot = None;
-        }
-    }
-
-    fn print(&self) {
-        for (i, slot) in self.slots.iter().enumerate() {
-            let marker = if i == self.active { "* " } else { "  " };
-            match slot {
-                Some(addr) => println!("{marker}slot {i}: {}", serial::format_addr(addr)),
-                None => println!("{marker}slot {i}: (empty)"),
-            }
-        }
-    }
-}
 
 fn handle_fw_event(msg: FirmwareMsg, slots: &mut SlotTable) {
     match msg {
         FirmwareMsg::Pong => {}
         FirmwareMsg::ConnectionStatus { addr, connected } => {
             if connected {
-                let slot = slots.assign(addr);
+                let slot = slots.connect(addr);
                 println!(
                     "  [event] slot {slot}: connected {}",
                     serial::format_addr(&addr)
@@ -106,7 +62,7 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
             handle_fw_event(msg, &mut slots);
         }
 
-        print!("[{}] > ", slots.active);
+        print!("[{}] > ", slots.active());
         io::stdout().flush()?;
 
         let mut line = String::new();
@@ -173,19 +129,18 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
                 while let Ok(msg) = fw_rx.recv_timeout(QUERY_RESPONSE_TIMEOUT) {
                     handle_fw_event(msg, &mut slots);
                 }
-                slots.print();
+                slots.print_status();
             }
 
             "s" => {
                 if let Some(n) = parts.get(1).and_then(|s| s.parse::<usize>().ok()) {
-                    if n < MAX_SLOTS {
-                        slots.active = n;
+                    if slots.set_active(n) {
                         println!("  active slot: {n}");
                     } else {
-                        println!("  slot must be 0..{}", MAX_SLOTS - 1);
+                        println!("  slot must be 0..{}", slots::MAX_SLOTS - 1);
                     }
                 } else {
-                    println!("  usage: s <0-{}>", MAX_SLOTS - 1);
+                    println!("  usage: s <0-{}>", slots::MAX_SLOTS - 1);
                 }
             }
 

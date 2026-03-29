@@ -4,15 +4,16 @@ mod keyboard;
 mod keymap;
 mod trackpad;
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 use log::info;
 
 use crate::serial;
+use crate::slots::SlotTable;
 
 /// Run real capture mode: capture Mac keyboard and trackpad input,
 /// forward as HID reports to the firmware.
@@ -25,11 +26,15 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
     serial::handshake(&mut write_port, &fw_rx)?;
 
     info!("Real capture mode — forwarding keyboard + trackpad to firmware");
+    info!("Ctrl+Shift+F1-F4 to switch active slot");
+
+    // Shared slot table — updated by fw-events thread, read by keyboard hotkey.
+    let slots = Arc::new(Mutex::new(SlotTable::new()));
 
     // Channel for captured input events → serial writer.
     let (input_tx, input_rx) = mpsc::channel::<HostMsg>();
 
-    // Serial writer thread: drains input events and writes to UART.
+    // Serial writer thread.
     let mut writer = write_port;
     std::thread::Builder::new()
         .name("serial-writer".into())
@@ -41,19 +46,23 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
             }
         })?;
 
-    // Firmware event printer thread: shows BLE events on stdout.
+    // Firmware event thread: updates slot table and prints status.
+    let fw_slots = Arc::clone(&slots);
     std::thread::Builder::new()
         .name("fw-events".into())
         .spawn(move || {
             while let Ok(msg) = fw_rx.recv() {
                 match msg {
                     FirmwareMsg::ConnectionStatus { addr, connected } => {
-                        let status = if connected {
-                            "connected"
+                        let mut table = fw_slots.lock().expect("slot table poisoned");
+                        if connected {
+                            let slot = table.connect(addr);
+                            info!("BLE slot {slot}: connected {}", serial::format_addr(&addr));
                         } else {
-                            "disconnected"
-                        };
-                        info!("BLE {status}: {}", serial::format_addr(&addr));
+                            table.disconnect(addr);
+                            info!("BLE disconnected: {}", serial::format_addr(&addr));
+                        }
+                        table.print_status();
                     }
                     FirmwareMsg::LedState(bits) => {
                         info!("LED state: {bits:#04x}");
@@ -63,22 +72,22 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
             }
         })?;
 
-    // Shared click state: CGEventTap detects trackpad clicks,
-    // trackpad callback reads it to set the PTP button field.
+    // Shared click state.
     let click_state = Arc::new(AtomicBool::new(false));
 
-    // Keyboard + click capture thread (needs its own CFRunLoop).
+    // Keyboard + click capture thread.
     let kb_tx = input_tx.clone();
     let click = Arc::clone(&click_state);
+    let kb_slots = Arc::clone(&slots);
     std::thread::Builder::new()
         .name("keyboard".into())
         .spawn(move || {
-            if let Err(e) = keyboard::run(kb_tx, click) {
+            if let Err(e) = keyboard::run(kb_tx, click, kb_slots) {
                 log::error!("Keyboard capture failed: {e}");
             }
         })?;
 
-    // Trackpad capture on this thread (runs its own CFRunLoop).
+    // Trackpad capture on this thread.
     trackpad::run(input_tx, click_state)?;
 
     Ok(())

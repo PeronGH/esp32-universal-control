@@ -1,6 +1,7 @@
 mod capture;
 mod debug;
 mod serial;
+mod slots;
 
 fn usage() {
     eprintln!("usage: esp32-uc-host <command> <serial-port>");
