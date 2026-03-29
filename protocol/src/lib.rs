@@ -6,5 +6,4 @@
 
 #![no_std]
 
-pub mod hid_descriptor;
 pub mod ptp;

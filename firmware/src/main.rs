@@ -1,4 +1,5 @@
 mod ble_hid;
+mod hid_descriptor;
 
 use std::time::Duration;
 
