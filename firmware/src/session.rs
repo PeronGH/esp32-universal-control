@@ -13,8 +13,8 @@ use log::warn;
 
 use crate::ble_hid::{BleEvent, BleHid};
 
-/// Target BLE touch forwarding cadence (~123 Hz).
-const TOUCH_REPORT_INTERVAL_US: u64 = 8_130;
+/// Target BLE touch forwarding cadence (125 Hz).
+const TOUCH_REPORT_INTERVAL_US: u64 = 8_000;
 /// Retry backpressured touch notifications quickly without flooding the stack.
 const TOUCH_RETRY_INTERVAL_US: u64 = 1_000;
 /// Throttle repeated backpressure logs to keep the monitor readable.
