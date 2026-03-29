@@ -9,6 +9,9 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 
+# Persist bonding data to NVS so paired devices reconnect after reboot.
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+
 # Console/logs go to USB-Serial-JTAG (the "USB JTAG/serial debug unit" port,
 # same port espflash uses for flashing and monitoring).
 # This frees UART0 (CH343 "USB Single Serial" port) for host data.
