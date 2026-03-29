@@ -20,12 +20,12 @@ use crate::slots::SlotTable;
 
 const MAX_KEYS: usize = 6;
 
-/// macOS virtual keycodes for F1-F5.
-const MAC_F1: u16 = 0x7A;
-const MAC_F2: u16 = 0x78;
-const MAC_F3: u16 = 0x63;
-const MAC_F4: u16 = 0x76;
-const MAC_F5: u16 = 0x60;
+/// macOS virtual keycodes for number keys 1-5.
+const MAC_1: u16 = 0x12;
+const MAC_2: u16 = 0x13;
+const MAC_3: u16 = 0x14;
+const MAC_4: u16 = 0x15;
+const MAC_5: u16 = 0x17;
 
 /// Start keyboard + click capture. Blocks the calling thread (runs CFRunLoop).
 pub fn run(
@@ -63,7 +63,6 @@ pub fn run(
                     CallbackResult::Keep
                 }
                 CGEventType::KeyDown => {
-                    // Hotkeys are always processed, never suppressed.
                     if handle_slot_hotkey(event, &slots) {
                         return CallbackResult::Keep;
                     }
@@ -114,10 +113,11 @@ pub fn run(
     Ok(())
 }
 
-/// Check if a KeyDown is Ctrl+Shift+F1-F5. If so, switch target and return true.
+/// Check if a KeyDown is Ctrl+Opt+1-5. If so, switch target and return true.
 fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
     let flags = event.get_flags();
-    if !flags.contains(CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift) {
+    let ctrl_opt = CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagAlternate;
+    if !flags.contains(ctrl_opt) {
         return false;
     }
 
@@ -125,33 +125,33 @@ fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
     let table = slots.lock().expect("poisoned");
 
     match keycode {
-        MAC_F1 => {
+        MAC_1 => {
             table.switch_to_mac();
-            info!("→ Mac (local)");
+            info!("Switched to Mac (local)");
             table.print_status();
             true
         }
-        MAC_F2 => {
+        MAC_2 => {
             table.switch_to_remote(0);
-            info!("→ Remote slot 0");
+            info!("Switched to remote slot 0");
             table.print_status();
             true
         }
-        MAC_F3 => {
+        MAC_3 => {
             table.switch_to_remote(1);
-            info!("→ Remote slot 1");
+            info!("Switched to remote slot 1");
             table.print_status();
             true
         }
-        MAC_F4 => {
+        MAC_4 => {
             table.switch_to_remote(2);
-            info!("→ Remote slot 2");
+            info!("Switched to remote slot 2");
             table.print_status();
             true
         }
-        MAC_F5 => {
+        MAC_5 => {
             table.switch_to_remote(3);
-            info!("→ Remote slot 3");
+            info!("Switched to remote slot 3");
             table.print_status();
             true
         }
