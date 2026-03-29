@@ -97,6 +97,7 @@ impl BleHid {
         let (event_tx, event_rx) = mpsc::channel::<BleEvent>();
 
         let server = device.get_server();
+        let advertising = device.get_advertising();
 
         // --- BLE connection event callbacks -----------------------------------
         let tx = event_tx.clone();
@@ -118,6 +119,13 @@ impl BleHid {
                 conn_handle: desc.conn_handle(),
                 addr: desc.id_address().as_le_bytes(),
             });
+            if server.connected_count() < (esp_idf_svc::sys::CONFIG_BT_NIMBLE_MAX_CONNECTIONS as _)
+            {
+                info!("Restarting advertising for additional peer slots");
+                if let Err(err) = advertising.lock().start() {
+                    warn!("failed to restart advertising after connect: {err:?}");
+                }
+            }
         });
         let tx = event_tx.clone();
         server.on_disconnect(move |desc, _reason| {
