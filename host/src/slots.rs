@@ -1,17 +1,23 @@
-//! Host-side slot table. Maps BLE addresses to numbered slots.
-//! The firmware has no concept of slots — this is entirely host-side.
+//! Host-side slot table and forwarding state.
+//!
+//! Slots 0-3 track remote BLE devices. A separate `forwarding` flag
+//! controls whether input is sent to a remote device or stays local (Mac).
+//! The firmware has no concept of "Mac" — this is purely host-side.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::serial;
 
 pub const MAX_SLOTS: usize = 4;
 
-/// Thread-safe slot table. Addresses are assigned on connect, cleared on
-/// disconnect. Active slot is switched by hotkey.
+/// Thread-safe slot table with forwarding state.
 pub struct SlotTable {
     slots: [Option<[u8; 6]>; MAX_SLOTS],
+    /// Which remote slot is targeted (0-3). Only relevant when forwarding.
     active: AtomicUsize,
+    /// When true, input is forwarded to the active remote slot.
+    /// When false, input stays on Mac (local).
+    forwarding: AtomicBool,
 }
 
 impl SlotTable {
@@ -19,7 +25,35 @@ impl SlotTable {
         Self {
             slots: [None; MAX_SLOTS],
             active: AtomicUsize::new(0),
+            forwarding: AtomicBool::new(false),
         }
+    }
+
+    /// Whether input is being forwarded to a remote device.
+    pub fn is_forwarding(&self) -> bool {
+        self.forwarding.load(Ordering::Acquire)
+    }
+
+    /// Switch to Mac (local). Stops forwarding.
+    pub fn switch_to_mac(&self) {
+        self.forwarding.store(false, Ordering::Release);
+    }
+
+    /// Switch to a remote slot. Starts forwarding.
+    /// Returns false if slot is out of range.
+    pub fn switch_to_remote(&self, slot: usize) -> bool {
+        if slot < MAX_SLOTS {
+            self.active.store(slot, Ordering::Relaxed);
+            self.forwarding.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the active remote slot index.
+    pub fn active(&self) -> usize {
+        self.active.load(Ordering::Relaxed)
     }
 
     /// Assign an address to the first empty slot, or return its existing slot.
@@ -43,25 +77,23 @@ impl SlotTable {
         }
     }
 
-    /// Get the active slot index.
-    pub fn active(&self) -> usize {
-        self.active.load(Ordering::Relaxed)
-    }
-
-    /// Switch active slot. Returns false if out of range.
+    /// For debug CLI compatibility.
     pub fn set_active(&self, slot: usize) -> bool {
-        if slot < MAX_SLOTS {
-            self.active.store(slot, Ordering::Relaxed);
-            true
-        } else {
-            false
-        }
+        self.switch_to_remote(slot)
     }
 
-    /// Print all slots to stdout, marking the active one.
+    /// Print all slots to stderr, marking the active target.
     pub fn print_status(&self) {
+        let forwarding = self.is_forwarding();
+        let active = self.active();
+        let mac_marker = if !forwarding { "▶" } else { " " };
+        eprintln!("{mac_marker} Mac (local)");
         for (i, slot) in self.slots.iter().enumerate() {
-            let marker = if i == self.active() { "▶" } else { " " };
+            let marker = if forwarding && i == active {
+                "▶"
+            } else {
+                " "
+            };
             match slot {
                 Some(addr) => eprintln!("{marker} slot {i}: {}", serial::format_addr(addr)),
                 None => eprintln!("{marker} slot {i}: ---"),

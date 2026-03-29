@@ -34,14 +34,18 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
     // Channel for captured input events → serial writer.
     let (input_tx, input_rx) = mpsc::channel::<HostMsg>();
 
-    // Serial writer thread.
+    // Serial writer thread. On disconnect, forces back to Mac.
     let mut writer = write_port;
+    let writer_slots = Arc::clone(&slots);
     std::thread::Builder::new()
         .name("serial-writer".into())
         .spawn(move || {
             while let Ok(msg) = input_rx.recv() {
                 if let Err(e) = serial::send(&mut writer, &msg) {
-                    log::warn!("Serial send error: {e}");
+                    log::error!("Serial disconnected: {e} — falling back to Mac");
+                    writer_slots.lock().expect("poisoned").switch_to_mac();
+                    writer_slots.lock().expect("poisoned").print_status();
+                    break;
                 }
             }
         })?;
@@ -88,7 +92,7 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
         })?;
 
     // Trackpad capture on this thread.
-    trackpad::run(input_tx, click_state)?;
+    trackpad::run(input_tx, click_state, slots)?;
 
     Ok(())
 }

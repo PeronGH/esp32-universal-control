@@ -1,17 +1,16 @@
 //! Keyboard + click capture via CGEventTap.
 //!
-//! Creates an event tap at the HID level that observes key events and
-//! trackpad click events. Key events are translated to USB HID and sent
-//! as `HostMsg::Keyboard`. Click state is shared with the trackpad module
-//! via an `AtomicBool`. Ctrl+Shift+F1-F4 switches the active slot.
+//! When forwarding to a remote slot, keyboard events are suppressed locally
+//! (CallbackResult::Drop) and sent to the firmware. When targeting Mac,
+//! events pass through normally. Ctrl+Shift+F1 = Mac, Ctrl+Shift+F2-F5 = remote.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 use core_graphics::event::*;
-use log::{info, warn};
+use log::info;
 
 use esp32_uc_protocol::keyboard::KeyboardReport;
 use esp32_uc_protocol::wire::HostMsg;
@@ -21,25 +20,27 @@ use crate::slots::SlotTable;
 
 const MAX_KEYS: usize = 6;
 
-/// macOS virtual keycodes for F1-F4.
+/// macOS virtual keycodes for F1-F5.
 const MAC_F1: u16 = 0x7A;
 const MAC_F2: u16 = 0x78;
 const MAC_F3: u16 = 0x63;
 const MAC_F4: u16 = 0x76;
+const MAC_F5: u16 = 0x60;
 
 /// Start keyboard + click capture. Blocks the calling thread (runs CFRunLoop).
 pub fn run(
     tx: mpsc::Sender<HostMsg>,
     click_state: Arc<AtomicBool>,
-    slots: Arc<std::sync::Mutex<SlotTable>>,
+    slots: Arc<Mutex<SlotTable>>,
 ) -> anyhow::Result<()> {
     info!("Starting keyboard + click capture (CGEventTap)");
-    info!("Ctrl+Shift+F1-F4 to switch active slot");
+    info!("Ctrl+Shift+F1 = Mac | Ctrl+Shift+F2-F5 = remote slots 0-3");
 
     let tap = CGEventTap::new(
         CGEventTapLocation::HID,
         CGEventTapPlacement::HeadInsertEventTap,
-        CGEventTapOptions::ListenOnly,
+        // Default (not ListenOnly) allows us to suppress events.
+        CGEventTapOptions::Default,
         vec![
             CGEventType::KeyDown,
             CGEventType::KeyUp,
@@ -48,33 +49,53 @@ pub fn run(
             CGEventType::LeftMouseUp,
         ],
         move |_proxy, event_type, event| {
+            let forwarding = slots.lock().expect("poisoned").is_forwarding();
+
             match event_type {
                 CGEventType::LeftMouseDown => {
-                    click_state.store(true, Ordering::Release);
+                    if forwarding {
+                        click_state.store(true, Ordering::Release);
+                    }
+                    // Never suppress mouse clicks — Mac needs them for UI.
+                    CallbackResult::Keep
                 }
                 CGEventType::LeftMouseUp => {
                     click_state.store(false, Ordering::Release);
+                    CallbackResult::Keep
                 }
                 CGEventType::KeyDown => {
+                    // Hotkeys are always processed, never suppressed.
                     if handle_slot_hotkey(event, &slots) {
-                        // Consumed — don't forward to firmware.
                         return CallbackResult::Keep;
                     }
-                    if let Some(msg) = translate_key_event(event_type, event)
-                        && tx.send(msg).is_err()
-                    {
-                        warn!("Keyboard channel closed");
+                    if forwarding {
+                        if let Some(msg) = translate_key_event(event_type, event) {
+                            let _ = tx.send(msg);
+                        }
+                        CallbackResult::Drop
+                    } else {
+                        CallbackResult::Keep
                     }
                 }
-                _ => {
-                    if let Some(msg) = translate_key_event(event_type, event)
-                        && tx.send(msg).is_err()
-                    {
-                        warn!("Keyboard channel closed");
+                CGEventType::KeyUp => {
+                    if forwarding {
+                        if let Some(msg) = translate_key_event(event_type, event) {
+                            let _ = tx.send(msg);
+                        }
+                        CallbackResult::Drop
+                    } else {
+                        CallbackResult::Keep
                     }
                 }
+                CGEventType::FlagsChanged => {
+                    if forwarding && let Some(msg) = translate_key_event(event_type, event) {
+                        let _ = tx.send(msg);
+                    }
+                    // Never suppress modifier changes — they need to stay in sync.
+                    CallbackResult::Keep
+                }
+                _ => CallbackResult::Keep,
             }
-            CallbackResult::Keep
         },
     )
     .map_err(|()| {
@@ -94,31 +115,49 @@ pub fn run(
     Ok(())
 }
 
-/// Check if a KeyDown event is Ctrl+Shift+F1-F4. If so, switch the active
-/// slot and return true (consumed). Otherwise return false (forward normally).
-fn handle_slot_hotkey(event: &CGEvent, slots: &std::sync::Mutex<SlotTable>) -> bool {
+/// Check if a KeyDown is Ctrl+Shift+F1-F5. If so, switch target and return true.
+fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
     let flags = event.get_flags();
-    let has_ctrl_shift =
-        flags.contains(CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift);
-    if !has_ctrl_shift {
+    if !flags.contains(CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift) {
         return false;
     }
 
     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-    let slot = match keycode {
-        MAC_F1 => 0,
-        MAC_F2 => 1,
-        MAC_F3 => 2,
-        MAC_F4 => 3,
-        _ => return false,
-    };
+    let table = slots.lock().expect("poisoned");
 
-    let table = slots.lock().expect("slot table poisoned");
-    if table.set_active(slot) {
-        info!("Switched to slot {slot}");
-        table.print_status();
+    match keycode {
+        MAC_F1 => {
+            table.switch_to_mac();
+            info!("→ Mac (local)");
+            table.print_status();
+            true
+        }
+        MAC_F2 => {
+            table.switch_to_remote(0);
+            info!("→ Remote slot 0");
+            table.print_status();
+            true
+        }
+        MAC_F3 => {
+            table.switch_to_remote(1);
+            info!("→ Remote slot 1");
+            table.print_status();
+            true
+        }
+        MAC_F4 => {
+            table.switch_to_remote(2);
+            info!("→ Remote slot 2");
+            table.print_status();
+            true
+        }
+        MAC_F5 => {
+            table.switch_to_remote(3);
+            info!("→ Remote slot 3");
+            table.print_status();
+            true
+        }
+        _ => false,
     }
-    true
 }
 
 /// Translate a macOS keyboard event to a `HostMsg::Keyboard`.

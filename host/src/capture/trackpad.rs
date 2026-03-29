@@ -84,6 +84,8 @@ const PTP_Y_MAX: f32 = 12_000.0;
 static TX: std::sync::OnceLock<mpsc::Sender<HostMsg>> = std::sync::OnceLock::new();
 static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 static CLICK_STATE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
+static SLOTS: std::sync::OnceLock<Arc<std::sync::Mutex<crate::slots::SlotTable>>> =
+    std::sync::OnceLock::new();
 
 unsafe extern "C" fn mt_callback(
     _device: MTDeviceRef,
@@ -92,6 +94,12 @@ unsafe extern "C" fn mt_callback(
     _timestamp: f64,
     _frame: i32,
 ) {
+    // Skip when targeting Mac — let native trackpad work.
+    if let Some(slots) = SLOTS.get()
+        && !slots.lock().expect("poisoned").is_forwarding()
+    {
+        return;
+    }
     let Some(tx) = TX.get() else { return };
     let touch_slice = if touch_count > 0 && !touches.is_null() {
         unsafe { std::slice::from_raw_parts(touches, touch_count as usize) }
@@ -137,7 +145,11 @@ unsafe extern "C" fn mt_callback(
 
 /// Start trackpad capture. Blocks the calling thread.
 /// Touch events are translated to PTP reports and sent to `tx`.
-pub fn run(tx: mpsc::Sender<HostMsg>, click: Arc<AtomicBool>) -> anyhow::Result<()> {
+pub fn run(
+    tx: mpsc::Sender<HostMsg>,
+    click: Arc<AtomicBool>,
+    slots: Arc<std::sync::Mutex<crate::slots::SlotTable>>,
+) -> anyhow::Result<()> {
     info!("Starting trackpad capture (MultitouchSupport.framework)");
 
     TX.set(tx)
@@ -145,6 +157,9 @@ pub fn run(tx: mpsc::Sender<HostMsg>, click: Arc<AtomicBool>) -> anyhow::Result<
     CLICK_STATE
         .set(click)
         .map_err(|_| anyhow::anyhow!("trackpad click state already initialized"))?;
+    SLOTS
+        .set(slots)
+        .map_err(|_| anyhow::anyhow!("trackpad slots already initialized"))?;
 
     let lib = unsafe {
         libloading::Library::new(
