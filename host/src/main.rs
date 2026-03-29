@@ -126,7 +126,6 @@ fn run() -> anyhow::Result<()> {
     println!("  l = list connected devices");
     println!("  q = quit");
 
-    let mut touch_x: u16 = 5000;
     let mut scan_time: u16 = 0;
 
     let stdin = io::stdin();
@@ -147,27 +146,37 @@ fn run() -> anyhow::Result<()> {
 
         match line.trim() {
             "t" => {
-                let mut report = PtpReport {
+                // Send a full horizontal sweep: finger down, move, lift.
+                let mut x: u16 = 5000;
+                while x <= 15_000 {
+                    let report = PtpReport {
+                        contacts: {
+                            let mut c = [PtpContact::default(); 5];
+                            c[0] = PtpContact {
+                                flags: PtpContact::FINGER_DOWN,
+                                contact_id: 1,
+                                x,
+                                y: 6000,
+                            };
+                            c
+                        },
+                        scan_time,
+                        contact_count: 1,
+                        button: 0,
+                    };
+                    scan_time = scan_time.wrapping_add(50);
+                    send(&mut write_port, &HostMsg::Touch(report))?;
+                    std::thread::sleep(Duration::from_millis(16));
+                    x += 200;
+                }
+                // Finger lift
+                let report = PtpReport {
                     scan_time,
                     ..PtpReport::default()
                 };
                 scan_time = scan_time.wrapping_add(50);
-
-                if touch_x <= 15_000 {
-                    report.contacts[0] = PtpContact {
-                        flags: PtpContact::FINGER_DOWN,
-                        contact_id: 1,
-                        x: touch_x,
-                        y: 6000,
-                    };
-                    report.contact_count = 1;
-                    touch_x += 500;
-                } else {
-                    touch_x = 5000;
-                }
-
                 send(&mut write_port, &HostMsg::Touch(report))?;
-                println!("  touch x={}", touch_x.saturating_sub(500));
+                println!("  touch sweep done");
             }
 
             "k" => {
