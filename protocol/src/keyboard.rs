@@ -14,7 +14,16 @@ pub const REPORTID_CONSUMER: u8 = 0x02;
 ///
 /// `1 B modifiers + 1 B reserved + 6 B keycodes = 8 B`
 #[repr(C, packed)]
-#[derive(Clone, Copy, Default, zerocopy::IntoBytes, zerocopy::Immutable)]
+#[derive(
+    Clone,
+    Copy,
+    Default,
+    Debug,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct KeyboardReport {
     /// Modifier key bit flags (bit 0 = LCtrl, 1 = LShift, 2 = LAlt,
     /// 3 = LGui, 4–7 = right equivalents).

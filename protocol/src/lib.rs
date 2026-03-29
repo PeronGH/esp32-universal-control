@@ -8,3 +8,4 @@
 
 pub mod keyboard;
 pub mod ptp;
+pub mod wire;

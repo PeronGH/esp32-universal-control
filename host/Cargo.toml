@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.102"
 esp32-uc-protocol = { path = "../protocol" }
+postcard = "1.1.3"
+serialport5 = "5.0.2"
+zerocopy = { version = "0.8.48", features = ["derive"] }

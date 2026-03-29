@@ -72,7 +72,10 @@ const PTPHQA_BLOB: [u8; 256] = [
 /// Owns the NimBLE HID device and its report characteristics.
 pub struct BleHid {
     keyboard_input: Arc<Mutex<BLECharacteristic>>,
-    #[allow(dead_code, reason = "will be used when host app sends consumer key events")]
+    #[allow(
+        dead_code,
+        reason = "will be used when host app sends consumer key events"
+    )]
     consumer_input: Arc<Mutex<BLECharacteristic>>,
     touch_input: Arc<Mutex<BLECharacteristic>>,
 }
@@ -155,7 +158,10 @@ impl BleHid {
     }
 
     /// Send a consumer control input report (16-bit bitfield, little-endian).
-    #[allow(dead_code, reason = "will be used when host app sends consumer key events")]
+    #[allow(
+        dead_code,
+        reason = "will be used when host app sends consumer key events"
+    )]
     pub fn send_consumer(&self, bits: u16) {
         let mut chr = self.consumer_input.lock();
         chr.set_value(&bits.to_le_bytes());

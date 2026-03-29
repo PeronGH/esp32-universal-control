@@ -38,7 +38,16 @@ pub const INPUT_MODE_PTP: u8 = 0x03;
 /// Layout per the HID descriptor: 1 byte flags + 4 byte contact ID +
 /// 2 byte X + 2 byte Y = 9 bytes.
 #[repr(C, packed)]
-#[derive(Clone, Copy, Default, zerocopy::IntoBytes, zerocopy::Immutable)]
+#[derive(
+    Clone,
+    Copy,
+    Default,
+    Debug,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct PtpContact {
     /// Bit 0: confidence, bit 1: tip switch.
     pub flags: u8,
@@ -60,7 +69,15 @@ impl PtpContact {
 ///
 /// `5 contacts * 9 B + 2 B scan_time + 1 B contact_count + 1 B button = 49 B`
 #[repr(C, packed)]
-#[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct PtpReport {
     /// Up to 5 finger slots; unused slots are zeroed.
     pub contacts: [PtpContact; MAX_CONTACTS as usize],

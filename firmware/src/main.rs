@@ -1,13 +1,13 @@
 mod ble_hid;
 mod hid_descriptor;
 
-use std::time::Duration;
-
-use esp32_uc_protocol::keyboard::KeyboardReport;
-use esp32_uc_protocol::ptp::{PtpContact, PtpReport};
+use esp32_uc_protocol::wire::HostMsg;
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::uart::{self, UartDriver};
+use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use log::{error, info};
+use log::{error, info, warn};
+use postcard::accumulator::{CobsAccumulator, FeedResult};
 
 fn main() {
     esp_idf_svc::sys::link_patches();
@@ -16,77 +16,83 @@ fn main() {
     if let Err(e) = run() {
         error!("Fatal: {e}");
         loop {
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
 }
-
-/// USB HID keycode for each letter in "hello\n".
-const HELLO_KEYCODES: &[u8] = &[
-    0x0b, // h
-    0x08, // e
-    0x0f, // l
-    0x0f, // l
-    0x12, // o
-    0x28, // Enter
-];
 
 fn run() -> anyhow::Result<()> {
     info!("esp32-universal-control starting");
 
     let _nvs = EspDefaultNvsPartition::take()?;
-    let _peripherals = Peripherals::take()?;
+    let peripherals = Peripherals::take()?;
 
     let ble = ble_hid::BleHid::init()?;
 
-    info!("Waiting for BLE connection…");
+    // UART0 — the CH343P USB-serial port. TX is used for log output,
+    // RX receives COBS-framed messages from the host.
+    let uart = UartDriver::new(
+        peripherals.uart0,
+        peripherals.pins.gpio43, // TX0
+        peripherals.pins.gpio44, // RX0
+        Option::<esp_idf_svc::hal::gpio::AnyIOPin>::None,
+        Option::<esp_idf_svc::hal::gpio::AnyIOPin>::None,
+        &uart::config::Config::default().baudrate(Hertz(115_200)),
+    )?;
 
-    let mut x: u16 = 5000;
-    let mut scan_time: u16 = 0;
+    info!("UART0 ready, waiting for host messages…");
+
+    let mut cobs_buf: CobsAccumulator<128> = CobsAccumulator::new();
+    let mut read_buf = [0u8; 64];
 
     loop {
-        std::thread::sleep(Duration::from_millis(50));
-
-        if !ble.connected() {
+        // Block until at least 1 byte is available.
+        let n = uart.read(&mut read_buf, esp_idf_svc::hal::delay::BLOCK)?;
+        if n == 0 {
             continue;
         }
 
-        // --- Touch: horizontal sweep ---
-        let mut report = PtpReport {
-            scan_time,
-            ..PtpReport::default()
-        };
-        scan_time = scan_time.wrapping_add(50);
-
-        if x <= 15_000 {
-            report.contacts[0] = PtpContact {
-                flags: PtpContact::FINGER_DOWN,
-                contact_id: 1,
-                x,
-                y: 6000,
+        let mut window = &read_buf[..n];
+        while !window.is_empty() {
+            window = match cobs_buf.feed::<HostMsg>(window) {
+                FeedResult::Consumed => break,
+                FeedResult::OverFull(remaining) => {
+                    warn!("COBS buffer overflow, discarding frame");
+                    remaining
+                }
+                FeedResult::DeserError(remaining) => {
+                    warn!("postcard deserialization error, discarding frame");
+                    remaining
+                }
+                FeedResult::Success { data, remaining } => {
+                    handle_msg(&ble, data);
+                    remaining
+                }
             };
-            report.contact_count = 1;
-            x += 200;
-            ble.send_touch(&report);
-        } else {
-            // Lift finger
-            ble.send_touch(&report);
-            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+}
 
-            // --- Keyboard: type "hello\n" ---
-            for &keycode in HELLO_KEYCODES {
-                ble.send_keyboard(&KeyboardReport {
-                    keycodes: [keycode, 0, 0, 0, 0, 0],
-                    ..KeyboardReport::default()
-                });
-                std::thread::sleep(Duration::from_millis(20));
-                // Key release
-                ble.send_keyboard(&KeyboardReport::default());
-                std::thread::sleep(Duration::from_millis(20));
-            }
+fn handle_msg(ble: &ble_hid::BleHid, msg: HostMsg) {
+    if !ble.connected() {
+        return;
+    }
 
-            std::thread::sleep(Duration::from_secs(2));
-            x = 5000;
+    match msg {
+        HostMsg::Keyboard(report) => {
+            ble.send_keyboard(&report);
+        }
+        HostMsg::Touch(report) => {
+            ble.send_touch(&report);
+        }
+        HostMsg::SwitchSlot(slot) => {
+            info!("SwitchSlot({slot}) — not yet implemented");
+        }
+        HostMsg::SetSlotDevice { slot, addr } => {
+            info!("SetSlotDevice(slot={slot}, addr={addr:02x?}) — not yet implemented");
+        }
+        HostMsg::QuerySlots => {
+            info!("QuerySlots — not yet implemented");
         }
     }
 }
