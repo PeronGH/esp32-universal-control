@@ -230,22 +230,10 @@ fn handle_slot_hotkey(
             info!("Switched to Mac (local)");
             true
         }
-        MAC_2 => {
-            table.switch_to_remote(0);
-            true
-        }
-        MAC_3 => {
-            table.switch_to_remote(1);
-            true
-        }
-        MAC_4 => {
-            table.switch_to_remote(2);
-            true
-        }
-        MAC_5 => {
-            table.switch_to_remote(3);
-            true
-        }
+        MAC_2 => table.switch_to_remote(0),
+        MAC_3 => table.switch_to_remote(1),
+        MAC_4 => table.switch_to_remote(2),
+        MAC_5 => table.switch_to_remote(3),
         _ => false,
     };
 

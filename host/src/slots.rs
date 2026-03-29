@@ -44,9 +44,9 @@ impl SlotTable {
         self.forwarding.store(false, Ordering::Release);
     }
 
-    /// Switch to a remote slot. Starts forwarding.
+    /// Switch to a populated remote slot. Starts forwarding on success.
     pub fn switch_to_remote(&self, slot: usize) -> bool {
-        if slot < MAX_SLOTS {
+        if slot < MAX_SLOTS && self.slots[slot].is_some() {
             self.active.store(slot, Ordering::Relaxed);
             self.forwarding.store(true, Ordering::Release);
             true
@@ -100,5 +100,31 @@ impl SlotTable {
                 serial::format_addr(addr)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refuses_to_forward_to_empty_slot() {
+        let table = SlotTable::new();
+
+        assert!(!table.switch_to_remote(0));
+        assert!(!table.is_forwarding());
+        assert_eq!(table.active(), 0);
+    }
+
+    #[test]
+    fn switches_to_populated_slot() {
+        let mut table = SlotTable::new();
+        let addr = [1, 2, 3, 4, 5, 6];
+        let slot = table.connect(addr);
+
+        assert_eq!(slot, 0);
+        assert!(table.switch_to_remote(slot));
+        assert!(table.is_forwarding());
+        assert_eq!(table.active(), slot);
     }
 }
