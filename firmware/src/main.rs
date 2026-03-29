@@ -3,8 +3,7 @@ mod hid_descriptor;
 
 use esp32_uc_protocol::wire::HostMsg;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::hal::uart::{self, UartDriver};
-use esp_idf_svc::hal::units::Hertz;
+use esp_idf_svc::hal::usb_serial::UsbSerialDriver;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::{error, info, warn};
 use postcard::accumulator::{CobsAccumulator, FeedResult};
@@ -29,25 +28,23 @@ fn run() -> anyhow::Result<()> {
 
     let ble = ble_hid::BleHid::init()?;
 
-    // UART0 — the CH343P USB-serial port. TX is used for log output,
-    // RX receives COBS-framed messages from the host.
-    let uart = UartDriver::new(
-        peripherals.uart0,
-        peripherals.pins.gpio43, // TX0
-        peripherals.pins.gpio44, // RX0
-        Option::<esp_idf_svc::hal::gpio::AnyIOPin>::None,
-        Option::<esp_idf_svc::hal::gpio::AnyIOPin>::None,
-        &uart::config::Config::default().baudrate(Hertz(115_200)),
+    // USB-Serial-JTAG — the second serial port visible on the Mac through
+    // the CH334 hub. Console logs go to UART0/CH343 (the first port);
+    // this port is dedicated to host ↔ firmware data.
+    let mut usb_serial = UsbSerialDriver::new(
+        peripherals.usb_serial,
+        peripherals.pins.gpio19,
+        peripherals.pins.gpio20,
+        &Default::default(),
     )?;
 
-    info!("UART0 ready, waiting for host messages…");
+    info!("USB-Serial-JTAG ready, waiting for host messages…");
 
     let mut cobs_buf: CobsAccumulator<128> = CobsAccumulator::new();
     let mut read_buf = [0u8; 64];
 
     loop {
-        // Block until at least 1 byte is available.
-        let n = uart.read(&mut read_buf, esp_idf_svc::hal::delay::BLOCK)?;
+        let n = usb_serial.read(&mut read_buf, esp_idf_svc::hal::delay::BLOCK)?;
         if n == 0 {
             continue;
         }
