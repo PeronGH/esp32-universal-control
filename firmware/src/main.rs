@@ -166,6 +166,8 @@ fn handle_msg(ble: &ble_hid::BleHid, resp_tx: &mpsc::Sender<FirmwareMsg>, msg: H
         }
         HostMsg::Touch(report) => {
             if ble.connected() {
+                let count = { report.contact_count };
+                info!("Touch: count={count}");
                 ble.send_touch(&report);
             }
         }
