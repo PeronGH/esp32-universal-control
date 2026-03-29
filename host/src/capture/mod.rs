@@ -93,17 +93,21 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
             }
         })?;
 
+    // Lock-free forwarding flag for the CGEventTap callback.
+    let forwarding = slots.lock().expect("poisoned").forwarding_flag();
+
     // Shared click state.
     let click_state = Arc::new(AtomicBool::new(false));
 
-    // Keyboard + click capture thread.
+    // Keyboard + mouse capture thread.
     let kb_tx = input_tx.clone();
     let click = Arc::clone(&click_state);
+    let kb_fwd = Arc::clone(&forwarding);
     let kb_slots = Arc::clone(&slots);
     std::thread::Builder::new()
         .name("keyboard".into())
         .spawn(move || {
-            if let Err(e) = keyboard::run(kb_tx, click, kb_slots) {
+            if let Err(e) = keyboard::run(kb_tx, click, kb_fwd, kb_slots) {
                 log::error!("Keyboard capture failed: {e}");
             }
         })?;

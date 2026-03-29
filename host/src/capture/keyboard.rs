@@ -1,13 +1,15 @@
-//! Keyboard + click capture via CGEventTap.
+//! Keyboard + mouse event capture via CGEventTap.
 //!
-//! When forwarding to a remote slot, keyboard events are suppressed locally
-//! (CallbackResult::Drop) and sent to the firmware. When targeting Mac,
-//! events pass through normally. Ctrl+Shift+F1 = Mac, Ctrl+Shift+F2-F5 = remote.
+//! Uses `Default` mode to suppress keyboard and mouse events when forwarding
+//! to a remote device. The hot path is lock-free (reads a single AtomicBool).
+//! The mutex is only locked on the rare hotkey press (Ctrl+Opt+1-5).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use core_foundation::base::TCFType;
+use core_foundation::mach_port::CFMachPortRef;
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 use core_graphics::event::*;
 use log::info;
@@ -27,46 +29,75 @@ const MAC_3: u16 = 0x14;
 const MAC_4: u16 = 0x15;
 const MAC_5: u16 = 0x17;
 
-/// Start keyboard + click capture. Blocks the calling thread (runs CFRunLoop).
+/// Stored mach port ref for re-enabling the tap on TapDisabledByTimeout.
+static TAP_MACH_PORT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+unsafe extern "C" {
+    fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+}
+
+/// Re-enable the event tap after macOS disabled it due to timeout.
+fn reenable_tap() {
+    let ptr = TAP_MACH_PORT.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        // SAFETY: ptr is a valid CFMachPortRef stored after tap creation.
+        unsafe { CGEventTapEnable(ptr as CFMachPortRef, true) };
+    }
+}
+
+/// Start keyboard + mouse capture. Blocks the calling thread (runs CFRunLoop).
 pub fn run(
     tx: mpsc::Sender<HostMsg>,
     click_state: Arc<AtomicBool>,
+    forwarding: Arc<AtomicBool>,
     slots: Arc<Mutex<SlotTable>>,
 ) -> anyhow::Result<()> {
-    info!("Starting keyboard + click capture (CGEventTap)");
+    info!("Starting keyboard + mouse capture (CGEventTap)");
 
     let tap = CGEventTap::new(
         CGEventTapLocation::HID,
         CGEventTapPlacement::HeadInsertEventTap,
-        // Default (not ListenOnly) allows us to suppress events.
         CGEventTapOptions::Default,
         vec![
+            // Keyboard
             CGEventType::KeyDown,
             CGEventType::KeyUp,
             CGEventType::FlagsChanged,
+            // Mouse (trackpad generates these)
             CGEventType::LeftMouseDown,
             CGEventType::LeftMouseUp,
+            CGEventType::RightMouseDown,
+            CGEventType::RightMouseUp,
+            CGEventType::MouseMoved,
+            CGEventType::LeftMouseDragged,
+            CGEventType::RightMouseDragged,
+            CGEventType::OtherMouseDown,
+            CGEventType::OtherMouseUp,
+            CGEventType::OtherMouseDragged,
+            CGEventType::ScrollWheel,
         ],
         move |_proxy, event_type, event| {
-            let forwarding = slots.lock().expect("poisoned").is_forwarding();
+            // Handle tap timeout/disable by re-enabling.
+            match event_type {
+                CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
+                    info!("CGEventTap was disabled, re-enabling");
+                    reenable_tap();
+                    return CallbackResult::Keep;
+                }
+                _ => {}
+            }
+
+            // Lock-free: single atomic read, no mutex.
+            let fwd = forwarding.load(Ordering::Acquire);
 
             match event_type {
-                CGEventType::LeftMouseDown => {
-                    if forwarding {
-                        click_state.store(true, Ordering::Release);
-                    }
-                    // Never suppress mouse clicks; Mac needs them for UI.
-                    CallbackResult::Keep
-                }
-                CGEventType::LeftMouseUp => {
-                    click_state.store(false, Ordering::Release);
-                    CallbackResult::Keep
-                }
+                // Keyboard events
                 CGEventType::KeyDown => {
+                    // Hotkeys always processed (locks mutex, but rare).
                     if handle_slot_hotkey(event, &slots) {
                         return CallbackResult::Keep;
                     }
-                    if forwarding {
+                    if fwd {
                         if let Some(msg) = translate_key_event(event_type, event) {
                             let _ = tx.send(msg);
                         }
@@ -76,7 +107,7 @@ pub fn run(
                     }
                 }
                 CGEventType::KeyUp => {
-                    if forwarding {
+                    if fwd {
                         if let Some(msg) = translate_key_event(event_type, event) {
                             let _ = tx.send(msg);
                         }
@@ -86,19 +117,48 @@ pub fn run(
                     }
                 }
                 CGEventType::FlagsChanged => {
-                    if forwarding && let Some(msg) = translate_key_event(event_type, event) {
+                    if fwd && let Some(msg) = translate_key_event(event_type, event) {
                         let _ = tx.send(msg);
                     }
-                    // Always let modifier changes through to keep Mac in sync.
+                    // Always keep modifier changes so Mac stays in sync.
                     CallbackResult::Keep
                 }
-                _ => CallbackResult::Keep,
+
+                // Mouse/trackpad events
+                CGEventType::LeftMouseDown => {
+                    if fwd {
+                        click_state.store(true, Ordering::Release);
+                        CallbackResult::Drop
+                    } else {
+                        CallbackResult::Keep
+                    }
+                }
+                CGEventType::LeftMouseUp => {
+                    click_state.store(false, Ordering::Release);
+                    if fwd {
+                        CallbackResult::Drop
+                    } else {
+                        CallbackResult::Keep
+                    }
+                }
+                // All other mouse events: suppress when forwarding.
+                _ => {
+                    if fwd {
+                        CallbackResult::Drop
+                    } else {
+                        CallbackResult::Keep
+                    }
+                }
             }
         },
     )
     .map_err(|()| {
         anyhow::anyhow!("Failed to create CGEventTap. Is Accessibility permission granted?")
     })?;
+
+    // Store the mach port for re-enabling on timeout.
+    let port_ref = tap.mach_port().as_concrete_TypeRef();
+    TAP_MACH_PORT.store(port_ref as *mut _, Ordering::Release);
 
     let loop_source = tap
         .mach_port()
@@ -159,7 +219,6 @@ fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
     }
 }
 
-/// Translate a macOS keyboard event to a `HostMsg::Keyboard`.
 fn translate_key_event(event_type: CGEventType, event: &CGEvent) -> Option<HostMsg> {
     let mac_keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
     let flags = event.get_flags();
