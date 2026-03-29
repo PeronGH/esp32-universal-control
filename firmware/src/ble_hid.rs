@@ -62,7 +62,7 @@ pub struct BleHid {
     keyboard_input: Arc<Mutex<BLECharacteristic>>,
     consumer_input: Arc<Mutex<BLECharacteristic>>,
     touch_input: Arc<Mutex<BLECharacteristic>>,
-    event_rx: mpsc::Receiver<FirmwareMsg>,
+    event_rx: Option<mpsc::Receiver<FirmwareMsg>>,
 }
 
 impl BleHid {
@@ -156,14 +156,14 @@ impl BleHid {
             keyboard_input,
             consumer_input,
             touch_input,
-            event_rx,
+            event_rx: Some(event_rx),
         })
     }
 
-    /// Poll for a firmware event (BLE connect/disconnect, LED state).
-    /// Returns `None` if no event is pending.
-    pub fn try_recv_event(&self) -> Option<FirmwareMsg> {
-        self.event_rx.try_recv().ok()
+    /// Take the BLE event receiver. Must be called exactly once, before
+    /// passing to the TX thread.
+    pub fn take_event_rx(&mut self) -> mpsc::Receiver<FirmwareMsg> {
+        self.event_rx.take().expect("event_rx already taken")
     }
 
     /// Returns `true` when at least one BLE host is connected.

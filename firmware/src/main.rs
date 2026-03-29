@@ -1,10 +1,12 @@
 mod ble_hid;
 mod hid_descriptor;
 
+use std::sync::mpsc;
+
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 use esp_idf_svc::hal::gpio;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::hal::uart::{self, UartDriver};
+use esp_idf_svc::hal::uart::{self, UartDriver, UartTxDriver};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::{error, info, warn};
 use postcard::accumulator::{CobsAccumulator, FeedResult};
@@ -36,7 +38,7 @@ fn run() -> anyhow::Result<()> {
     let _nvs = EspDefaultNvsPartition::take()?;
     let peripherals = Peripherals::take()?;
 
-    let ble = ble_hid::BleHid::init()?;
+    let mut ble = ble_hid::BleHid::init()?;
 
     // UART0 (GPIO43 TX, GPIO44 RX) → CH343 → "USB Single Serial" port.
     // Console/logs go to USB-Serial-JTAG (CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG),
@@ -50,26 +52,30 @@ fn run() -> anyhow::Result<()> {
         &uart::config::Config::new(),
     )?;
 
+    // Split into independent TX/RX so writing responses never blocks the
+    // receive path (critical at 70 Hz touch input).
+    let (tx, rx) = uart.into_split();
+
+    // TX thread: drains BLE events and response messages, writes to UART.
+    let (resp_tx, resp_rx) = mpsc::channel::<FirmwareMsg>();
+    let ble_event_rx = ble.take_event_rx();
+    std::thread::Builder::new()
+        .name("uart-tx".into())
+        .stack_size(4096)
+        .spawn(move || uart_tx_task(tx, ble_event_rx, resp_rx))?;
+
     info!("UART0 ready, waiting for host messages…");
 
+    // RX loop: reads UART, decodes COBS, dispatches to BLE or queues response.
     let mut cobs_buf: CobsAccumulator<COBS_BUF_SIZE> = CobsAccumulator::new();
     let mut read_buf = [0u8; READ_BUF_SIZE];
 
     loop {
-        let n = match uart.read(&mut read_buf, READ_TIMEOUT_TICKS) {
+        let n = match rx.read(&mut read_buf, READ_TIMEOUT_TICKS) {
             Ok(n) => n,
-            Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_TIMEOUT => 0,
+            Err(e) if e.code() == esp_idf_svc::sys::ESP_ERR_TIMEOUT => continue,
             Err(e) => return Err(e.into()),
         };
-
-        // Forward BLE events (connect/disconnect, LED state) to host.
-        while let Some(msg) = ble.try_recv_event() {
-            send_to_host(&uart, &msg);
-        }
-
-        if n == 0 {
-            continue;
-        }
 
         let mut window = &read_buf[..n];
         while !window.is_empty() {
@@ -84,7 +90,7 @@ fn run() -> anyhow::Result<()> {
                     remaining
                 }
                 FeedResult::Success { data, remaining } => {
-                    handle_msg(&ble, &uart, data);
+                    handle_msg(&ble, &resp_tx, data);
                     remaining
                 }
             };
@@ -92,8 +98,37 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-/// Send a `FirmwareMsg` to the host over UART0, handling partial writes.
-fn send_to_host(uart: &UartDriver<'_>, msg: &FirmwareMsg) {
+/// TX thread: sends BLE events and command responses to the host.
+///
+/// Drains from two sources:
+/// - `ble_rx`: proactive BLE events (connect/disconnect, LED state)
+/// - `resp_rx`: responses to host commands (Pong, ConnectionStatus)
+fn uart_tx_task(
+    mut tx: UartTxDriver<'static>,
+    ble_rx: mpsc::Receiver<FirmwareMsg>,
+    resp_rx: mpsc::Receiver<FirmwareMsg>,
+) {
+    loop {
+        let mut sent = false;
+
+        while let Ok(msg) = ble_rx.try_recv() {
+            send(&mut tx, &msg);
+            sent = true;
+        }
+        while let Ok(msg) = resp_rx.try_recv() {
+            send(&mut tx, &msg);
+            sent = true;
+        }
+
+        if !sent {
+            // Nothing to send — sleep briefly to avoid busy-spinning.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+/// Encode and write a `FirmwareMsg` to UART TX, handling partial writes.
+fn send(tx: &mut UartTxDriver<'_>, msg: &FirmwareMsg) {
     let mut buf = [0u8; ENCODE_BUF_SIZE];
     let encoded = match postcard::to_slice_cobs(msg, &mut buf) {
         Ok(encoded) => encoded,
@@ -105,7 +140,7 @@ fn send_to_host(uart: &UartDriver<'_>, msg: &FirmwareMsg) {
 
     let mut offset = 0;
     while offset < encoded.len() {
-        match uart.write(&encoded[offset..]) {
+        match tx.write(&encoded[offset..]) {
             Ok(n) => offset += n,
             Err(e) => {
                 warn!("UART write failed: {e}");
@@ -115,7 +150,9 @@ fn send_to_host(uart: &UartDriver<'_>, msg: &FirmwareMsg) {
     }
 }
 
-fn handle_msg(ble: &ble_hid::BleHid, uart: &UartDriver<'_>, msg: HostMsg) {
+/// Handle a decoded host message. HID reports go directly to BLE.
+/// Responses are queued for the TX thread.
+fn handle_msg(ble: &ble_hid::BleHid, resp_tx: &mpsc::Sender<FirmwareMsg>, msg: HostMsg) {
     match msg {
         HostMsg::Keyboard(report) => {
             if ble.connected() {
@@ -134,17 +171,14 @@ fn handle_msg(ble: &ble_hid::BleHid, uart: &UartDriver<'_>, msg: HostMsg) {
         }
         HostMsg::QueryConnections => {
             for desc in ble.connections() {
-                send_to_host(
-                    uart,
-                    &FirmwareMsg::ConnectionStatus {
-                        addr: desc.address().as_le_bytes(),
-                        connected: true,
-                    },
-                );
+                let _ = resp_tx.send(FirmwareMsg::ConnectionStatus {
+                    addr: desc.address().as_le_bytes(),
+                    connected: true,
+                });
             }
         }
         HostMsg::Ping => {
-            send_to_host(uart, &FirmwareMsg::Pong);
+            let _ = resp_tx.send(FirmwareMsg::Pong);
         }
     }
 }
