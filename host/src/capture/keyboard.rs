@@ -183,12 +183,8 @@ impl CaptureState {
     fn handle_flags_changed(&mut self, event: &CGEvent) -> Option<HostMsg> {
         let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
         let mask = keymap::modifier_mask(keycode)?;
-        let pressed = event.get_flags().bits() & generic_modifier_flag(mask) != 0;
-        let next = if pressed {
-            self.keyboard.modifiers | mask
-        } else {
-            self.keyboard.modifiers & !mask
-        };
+        let generic_pressed = event.get_flags().bits() & generic_modifier_flag(mask) != 0;
+        let next = apply_modifier_transition(self.keyboard.modifiers, mask, generic_pressed);
         if next != self.keyboard.modifiers {
             self.keyboard.modifiers = next;
             Some(HostMsg::KeyboardState(self.keyboard))
@@ -209,6 +205,31 @@ fn generic_modifier_flag(mask: u8) -> u64 {
         0x04 | 0x40 => CGEventFlags::CGEventFlagAlternate.bits(),
         0x08 | 0x80 => CGEventFlags::CGEventFlagCommand.bits(),
         _ => 0,
+    }
+}
+
+fn modifier_pair_mask(mask: u8) -> u8 {
+    match mask {
+        0x01 | 0x10 => 0x11,
+        0x02 | 0x20 => 0x22,
+        0x04 | 0x40 => 0x44,
+        0x08 | 0x80 => 0x88,
+        _ => mask,
+    }
+}
+
+fn apply_modifier_transition(current: u8, mask: u8, generic_pressed: bool) -> u8 {
+    let exact_pressed = current & mask != 0;
+    let sibling_pressed = current & (modifier_pair_mask(mask) & !mask) != 0;
+
+    if generic_pressed {
+        if exact_pressed && sibling_pressed {
+            current & !mask
+        } else {
+            current | mask
+        }
+    } else {
+        current & !mask
     }
 }
 
@@ -389,5 +410,40 @@ fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>, tx: &Outbox) ->
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_modifier_transition;
+
+    #[test]
+    fn releasing_left_ctrl_keeps_right_ctrl_pressed() {
+        let left_ctrl = 0x01;
+        let right_ctrl = 0x10;
+        let current = left_ctrl | right_ctrl;
+
+        let next = apply_modifier_transition(current, left_ctrl, true);
+
+        assert_eq!(next, right_ctrl);
+    }
+
+    #[test]
+    fn pressing_right_shift_while_left_shift_is_down_keeps_both() {
+        let left_shift = 0x02;
+        let right_shift = 0x20;
+
+        let next = apply_modifier_transition(left_shift, right_shift, true);
+
+        assert_eq!(next, left_shift | right_shift);
+    }
+
+    #[test]
+    fn releasing_last_command_clears_that_side() {
+        let left_command = 0x08;
+
+        let next = apply_modifier_transition(left_command, left_command, false);
+
+        assert_eq!(next, 0);
     }
 }

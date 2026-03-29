@@ -43,7 +43,6 @@ When forwarding to a remote device, keyboard and mouse input is suppressed on Ma
 ## Known issues
 
 - Three-finger system gestures (Mission Control, App Expose) cannot be blocked from userspace. Disable in System Settings > Trackpad if needed.
-- Left/right modifier keys are not distinguished (macOS CGEventFlags limitation).
 
 ## License
 
