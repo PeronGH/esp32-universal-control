@@ -1,31 +1,107 @@
-//! Windows Precision Touchpad HID report descriptor and report ID constants.
+//! Composite HID report descriptor: keyboard + consumer + PTP.
 //!
-//! Translated byte-for-byte from `imbushuo/mac-precision-touchpad`:
-//! - `WellspringT2.h` (touchpad TLC with 5 finger collections)
-//! - `Hid.h` (configuration TLC with input mode and function switch)
-//!
-//! Two top-level collections:
-//! 1. **Digitizer / Touch Pad** (report ID 0x05) — 5 finger slots, scan time,
-//!    button, plus feature reports for device caps (0x07) and PTPHQA cert (0x08).
-//! 2. **Digitizer / Configuration** — feature reports for input mode (0x04) and
-//!    function switch (0x06).
+//! Four top-level collections in a single report map:
+//! 1. **Generic Desktop / Keyboard** (report ID 0x01) — standard boot keyboard
+//! 2. **Consumer / Consumer Control** (report ID 0x02) — 16 media keys
+//! 3. **Digitizer / Touch Pad** (report ID 0x05) — 5-finger PTP multitouch
+//! 4. **Digitizer / Configuration** (report ID 0x04/0x06) — PTP input mode + function switch
 
-use esp32_nimble::hid::{
-    COLLECTION, END_COLLECTION, FEATURE, HIDINPUT, LOGICAL_MAXIMUM, LOGICAL_MINIMUM,
-    PHYSICAL_MAXIMUM, REPORT_COUNT, REPORT_ID, REPORT_SIZE, UNIT, UNIT_EXPONENT, USAGE, USAGE_PAGE,
+use esp32_nimble::hid::*;
+
+use esp32_uc_protocol::keyboard::{REPORTID_CONSUMER, REPORTID_KEYBOARD};
+use esp32_uc_protocol::ptp;
+pub use esp32_uc_protocol::ptp::{
+    REPORTID_DEVICE_CAPS, REPORTID_FUNCSWITCH, REPORTID_MULTITOUCH, REPORTID_PTPHQA,
+    REPORTID_REPORTMODE,
 };
 
-use esp32_uc_protocol::ptp;
-pub use esp32_uc_protocol::ptp::{REPORTID_DEVICE_CAPS, REPORTID_FUNCSWITCH, REPORTID_MULTITOUCH, REPORTID_PTPHQA, REPORTID_REPORTMODE};
+// ---------------------------------------------------------------------------
+// TLC 1 & 2: Keyboard + Consumer (via hid! macro)
+// ---------------------------------------------------------------------------
+
+/// Keyboard + consumer control HID descriptor fragment.
+///
+/// From esp32-nimble `ble_keyboard.rs` example — standard boot keyboard
+/// layout (8 bytes) plus 16-bit consumer control.
+const KEYBOARD_CONSUMER_DESCRIPTOR: &[u8] = hid!(
+    // =========================================================================
+    // TLC 1: Generic Desktop / Keyboard
+    // =========================================================================
+    (USAGE_PAGE, 0x01), // Generic Desktop
+    (USAGE, 0x06),      // Keyboard
+    (COLLECTION, 0x01), // Application
+    (REPORT_ID, REPORTID_KEYBOARD),
+    // --- Modifier keys (8 bits) ---
+    (USAGE_PAGE, 0x07),    // Keyboard/Keypad
+    (USAGE_MINIMUM, 0xE0), // Left Control
+    (USAGE_MAXIMUM, 0xE7), // Right GUI
+    (LOGICAL_MINIMUM, 0x00),
+    (LOGICAL_MAXIMUM, 0x01),
+    (REPORT_SIZE, 0x01),
+    (REPORT_COUNT, 0x08),
+    (HIDINPUT, 0x02), // Data, Var, Abs
+    // --- Reserved byte ---
+    (REPORT_COUNT, 0x01),
+    (REPORT_SIZE, 0x08),
+    (HIDINPUT, 0x01), // Const
+    // --- LED output (5 bits + 3 padding) ---
+    (REPORT_COUNT, 0x05),
+    (REPORT_SIZE, 0x01),
+    (USAGE_PAGE, 0x08),    // LEDs
+    (USAGE_MINIMUM, 0x01), // Num Lock
+    (USAGE_MAXIMUM, 0x05), // Kana
+    (HIDOUTPUT, 0x02),     // Data, Var, Abs
+    (REPORT_COUNT, 0x01),
+    (REPORT_SIZE, 0x03),
+    (HIDOUTPUT, 0x01), // Const (padding)
+    // --- Key codes (6 bytes) ---
+    (REPORT_COUNT, 0x06),
+    (REPORT_SIZE, 0x08),
+    (LOGICAL_MINIMUM, 0x00),
+    (LOGICAL_MAXIMUM, 0x65), // 101 keys
+    (USAGE_PAGE, 0x07),      // Keyboard/Keypad
+    (USAGE_MINIMUM, 0x00),
+    (USAGE_MAXIMUM, 0x65),
+    (HIDINPUT, 0x00), // Data, Array, Abs
+    (END_COLLECTION),
+    // =========================================================================
+    // TLC 2: Consumer / Consumer Control
+    // =========================================================================
+    (USAGE_PAGE, 0x0C), // Consumer
+    (USAGE, 0x01),      // Consumer Control
+    (COLLECTION, 0x01), // Application
+    (REPORT_ID, REPORTID_CONSUMER),
+    (USAGE_PAGE, 0x0C), // Consumer
+    (LOGICAL_MINIMUM, 0x00),
+    (LOGICAL_MAXIMUM, 0x01),
+    (REPORT_SIZE, 0x01),
+    (REPORT_COUNT, 0x10), // 16 bits
+    (USAGE, 0xB5),        // Scan Next Track
+    (USAGE, 0xB6),        // Scan Previous Track
+    (USAGE, 0xB7),        // Stop
+    (USAGE, 0xCD),        // Play/Pause
+    (USAGE, 0xE2),        // Mute
+    (USAGE, 0xE9),        // Volume Up
+    (USAGE, 0xEA),        // Volume Down
+    (USAGE, 0x23, 0x02),  // WWW Home
+    (USAGE, 0x94, 0x01),  // My Computer
+    (USAGE, 0x92, 0x01),  // Calculator
+    (USAGE, 0x2A, 0x02),  // WWW Favorites
+    (USAGE, 0x21, 0x02),  // WWW Search
+    (USAGE, 0x26, 0x02),  // WWW Stop
+    (USAGE, 0x24, 0x02),  // WWW Back
+    (USAGE, 0x83, 0x01),  // Media Select
+    (USAGE, 0x8A, 0x01),  // Mail
+    (HIDINPUT, 0x02),     // Data, Var, Abs
+    (END_COLLECTION),
+);
 
 // ---------------------------------------------------------------------------
-// HID item sized tag variants
+// TLC 3 & 4: PTP touchpad + configuration (raw bytes — needs 4-byte items)
 // ---------------------------------------------------------------------------
-//
-// Base tags from esp32_nimble::hid have bSize = 0 in bits 0–1.
-// The sized variants OR in the data length for use in a raw byte array.
 
-// 1-byte data (bSize = 1)
+// Sized tag variants for the PTP descriptor (the hid! macro can't encode
+// 4-byte items). Base tags come from esp32_nimble::hid.
 const USAGE_PAGE_8: u8 = USAGE_PAGE | 1;
 const USAGE_8: u8 = USAGE | 1;
 const LOGICAL_MINIMUM_8: u8 = LOGICAL_MINIMUM | 1;
@@ -39,86 +115,53 @@ const REPORT_COUNT_8: u8 = REPORT_COUNT | 1;
 const COLLECTION_8: u8 = COLLECTION | 1;
 const HIDINPUT_8: u8 = HIDINPUT | 1;
 const FEATURE_8: u8 = FEATURE | 1;
-
-// 2-byte data (bSize = 2)
 const USAGE_PAGE_16: u8 = USAGE_PAGE | 2;
 const LOGICAL_MAXIMUM_16: u8 = LOGICAL_MAXIMUM | 2;
 const PHYSICAL_MAXIMUM_16: u8 = PHYSICAL_MAXIMUM | 2;
 const REPORT_COUNT_16: u8 = REPORT_COUNT | 2;
 const UNIT_16: u8 = UNIT | 2;
-
-// 4-byte data (bSize = 3 — HID encodes "4 data bytes" as bSize value 3)
 const LOGICAL_MAXIMUM_32: u8 = LOGICAL_MAXIMUM | 3;
 const PHYSICAL_MAXIMUM_32: u8 = PHYSICAL_MAXIMUM | 3;
 
-// ---------------------------------------------------------------------------
-// Descriptor
-// ---------------------------------------------------------------------------
-
-/// Windows Precision Touchpad HID report descriptor.
+/// PTP touchpad + configuration HID descriptor fragment.
 ///
-/// The raw bytes are identical to the C original. Named constants are used for
-/// HID item tags; data bytes remain numeric where they represent
-/// protocol-defined values (usage IDs, collection types, input/feature flags).
+/// Translated byte-for-byte from `imbushuo/mac-precision-touchpad`
+/// `WellspringT2.h` + `Hid.h`.
 #[rustfmt::skip]
-pub const PTP_REPORT_DESCRIPTOR: &[u8] = &[
+const PTP_DESCRIPTOR: &[u8] = &[
     // =========================================================================
-    // TLC 1: Digitizer / Touch Pad
+    // TLC 3: Digitizer / Touch Pad
     // =========================================================================
-    USAGE_PAGE_8,   0x0d,                       // Usage Page: Digitizer
-    USAGE_8,        0x05,                       // Usage: Touch Pad
-    COLLECTION_8,   0x01,                       // Collection: Application
+    USAGE_PAGE_8,   0x0d,                       // Digitizer
+    USAGE_8,        0x05,                       // Touch Pad
+    COLLECTION_8,   0x01,                       // Application
 
     REPORT_ID_8,    REPORTID_MULTITOUCH,
 
     // ----- Finger 1 (variant 1: with unit reset) ----------------------------
-    USAGE_8,        0x22,                       // Usage: Finger
-    COLLECTION_8,   0x02,                       // Collection: Logical
-    LOGICAL_MAXIMUM_8, 0x01,
-    USAGE_8,        0x47,                       //   Confidence
-    USAGE_8,        0x42,                       //   Tip Switch
-    REPORT_COUNT_8, 0x02,
-    REPORT_SIZE_8,  0x01,
-    HIDINPUT_8,     0x02,                       //   Data, Var, Abs
-    REPORT_SIZE_8,  0x01,
-    REPORT_COUNT_8, 0x06,
-    HIDINPUT_8,     0x03,                       //   Const (padding)
-    REPORT_COUNT_8, 0x01,
-    REPORT_SIZE_8,  0x20,                       //   32 bits
-    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff, //   Contact ID max
-    USAGE_8,        0x51,                       //   Contact Identifier
-    HIDINPUT_8,     0x02,
-    USAGE_PAGE_8,   0x01,                       //   Generic Desktop
-    LOGICAL_MAXIMUM_16, 0x20, 0x4e,             //   20000
-    REPORT_SIZE_8,  0x10,                       //   16 bits
-    UNIT_EXPONENT_8, 0x0e,                      //   -2
-    UNIT_8,         0x11,                       //   cm
-    USAGE_8,        0x30,                       //   X
-    PHYSICAL_MAXIMUM_16, 0x14, 0x05,            //   1300 (13.00 cm)
-    REPORT_COUNT_8, 0x01,
-    HIDINPUT_8,     0x02,
-    PHYSICAL_MAXIMUM_16, 0x52, 0x03,            //   850 (8.50 cm)
-    LOGICAL_MAXIMUM_16, 0xe0, 0x2e,             //   12000
-    USAGE_8,        0x31,                       //   Y
-    HIDINPUT_8,     0x02,
-    PHYSICAL_MAXIMUM_8, 0x00,                   //   reset
-    UNIT_EXPONENT_8, 0x00,                      //   reset
-    UNIT_8,         0x00,                       //   reset
-    END_COLLECTION,
-
-    // ----- Finger 2 (variant 1: with unit reset) ----------------------------
-    USAGE_PAGE_8, 0x0d,
-    USAGE_8, 0x22,
-    COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01,
-    USAGE_8, 0x47, USAGE_8, 0x42,
+    USAGE_8, 0x22, COLLECTION_8, 0x02,
+    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
     REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
     REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
     REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
     LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
     USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01,
-    LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
+    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
+    UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
+    USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, 0x14, 0x05, REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
+    PHYSICAL_MAXIMUM_16, 0x52, 0x03, LOGICAL_MAXIMUM_16, 0xe0, 0x2e, USAGE_8, 0x31, HIDINPUT_8, 0x02,
+    PHYSICAL_MAXIMUM_8, 0x00, UNIT_EXPONENT_8, 0x00, UNIT_8, 0x00,
+    END_COLLECTION,
+
+    // ----- Finger 2 (variant 1: with unit reset) ----------------------------
+    USAGE_PAGE_8, 0x0d, USAGE_8, 0x22, COLLECTION_8, 0x02,
+    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
+    REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
+    REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
+    REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
+    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
+    USAGE_8, 0x51, HIDINPUT_8, 0x02,
+    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
     UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
     USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, 0x14, 0x05, REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
     PHYSICAL_MAXIMUM_16, 0x52, 0x03, LOGICAL_MAXIMUM_16, 0xe0, 0x2e, USAGE_8, 0x31, HIDINPUT_8, 0x02,
@@ -126,36 +169,28 @@ pub const PTP_REPORT_DESCRIPTOR: &[u8] = &[
     END_COLLECTION,
 
     // ----- Finger 3 (variant 2: no unit reset) ------------------------------
-    USAGE_PAGE_8, 0x0d,
-    USAGE_8, 0x22,
-    COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01,
-    USAGE_8, 0x47, USAGE_8, 0x42,
+    USAGE_PAGE_8, 0x0d, USAGE_8, 0x22, COLLECTION_8, 0x02,
+    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
     REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
     REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
     REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
     LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
     USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01,
-    LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
+    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
     UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
     USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, 0x14, 0x05, REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
     PHYSICAL_MAXIMUM_16, 0x52, 0x03, LOGICAL_MAXIMUM_16, 0xe0, 0x2e, USAGE_8, 0x31, HIDINPUT_8, 0x02,
-    END_COLLECTION, // no unit reset — matches WellspringT2.h collection 2
+    END_COLLECTION,
 
     // ----- Finger 4 (variant 1: with unit reset) ----------------------------
-    USAGE_PAGE_8, 0x0d,
-    USAGE_8, 0x22,
-    COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01,
-    USAGE_8, 0x47, USAGE_8, 0x42,
+    USAGE_PAGE_8, 0x0d, USAGE_8, 0x22, COLLECTION_8, 0x02,
+    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
     REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
     REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
     REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
     LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
     USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01,
-    LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
+    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
     UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
     USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, 0x14, 0x05, REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
     PHYSICAL_MAXIMUM_16, 0x52, 0x03, LOGICAL_MAXIMUM_16, 0xe0, 0x2e, USAGE_8, 0x31, HIDINPUT_8, 0x02,
@@ -163,101 +198,82 @@ pub const PTP_REPORT_DESCRIPTOR: &[u8] = &[
     END_COLLECTION,
 
     // ----- Finger 5 (variant 2: no unit reset) ------------------------------
-    USAGE_PAGE_8, 0x0d,
-    USAGE_8, 0x22,
-    COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01,
-    USAGE_8, 0x47, USAGE_8, 0x42,
+    USAGE_PAGE_8, 0x0d, USAGE_8, 0x22, COLLECTION_8, 0x02,
+    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
     REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
     REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
     REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
     LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
     USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01,
-    LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
+    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, 0x20, 0x4e, REPORT_SIZE_8, 0x10,
     UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
     USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, 0x14, 0x05, REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
     PHYSICAL_MAXIMUM_16, 0x52, 0x03, LOGICAL_MAXIMUM_16, 0xe0, 0x2e, USAGE_8, 0x31, HIDINPUT_8, 0x02,
     END_COLLECTION,
 
     // ----- Scan Time --------------------------------------------------------
-    USAGE_PAGE_8,   0x0d,                       // Digitizer
-    UNIT_EXPONENT_8, 0x0c,                      // -4 (100 µs)
-    UNIT_16,        0x01, 0x10,                 // Second
-    PHYSICAL_MAXIMUM_32, 0xff, 0xff, 0x00, 0x00,// 65535
-    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0x00, 0x00, // 65535
-    USAGE_8,        0x56,                       // Scan Time
-    HIDINPUT_8,     0x02,                       // 16-bit, inherited
+    USAGE_PAGE_8, 0x0d, UNIT_EXPONENT_8, 0x0c, UNIT_16, 0x01, 0x10,
+    PHYSICAL_MAXIMUM_32, 0xff, 0xff, 0x00, 0x00,
+    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0x00, 0x00,
+    USAGE_8, 0x56, HIDINPUT_8, 0x02,
 
-    // ----- Contact Count ----------------------------------------------------
-    USAGE_8,        0x54,                       // Contact Count
-    LOGICAL_MAXIMUM_8, 0x7f,                    // 127
-    REPORT_SIZE_8,  0x08,
-    HIDINPUT_8,     0x02,
+    // ----- Contact Count + Button -------------------------------------------
+    USAGE_8, 0x54, LOGICAL_MAXIMUM_8, 0x7f, REPORT_SIZE_8, 0x08, HIDINPUT_8, 0x02,
+    USAGE_PAGE_8, 0x09, USAGE_8, 0x01, LOGICAL_MAXIMUM_8, 0x01, REPORT_SIZE_8, 0x01,
+    HIDINPUT_8, 0x02, REPORT_COUNT_8, 0x07, HIDINPUT_8, 0x03,
 
-    // ----- Button -----------------------------------------------------------
-    USAGE_PAGE_8,   0x09,                       // Button
-    USAGE_8,        0x01,                       // Button 1
-    LOGICAL_MAXIMUM_8, 0x01,
-    REPORT_SIZE_8,  0x01,
-    HIDINPUT_8,     0x02,                       // 1-bit button
-    REPORT_COUNT_8, 0x07,
-    HIDINPUT_8,     0x03,                       // 7-bit padding
+    // ----- Feature: Device Capabilities (0x07) ------------------------------
+    USAGE_PAGE_8, 0x0d, REPORT_ID_8, REPORTID_DEVICE_CAPS,
+    USAGE_8, 0x55, USAGE_8, 0x59,
+    LOGICAL_MINIMUM_8, 0x00, LOGICAL_MAXIMUM_16, 0xff, 0x00,
+    REPORT_SIZE_8, 0x08, REPORT_COUNT_8, 0x02, FEATURE_8, 0x02,
 
-    // ----- Feature: Device Capabilities (report ID 0x07) --------------------
-    USAGE_PAGE_8,   0x0d,                       // Digitizer
-    REPORT_ID_8,    REPORTID_DEVICE_CAPS,
-    USAGE_8,        0x55,                       // Maximum Contacts
-    USAGE_8,        0x59,                       // Touchpad Button Type
-    LOGICAL_MINIMUM_8, 0x00,
-    LOGICAL_MAXIMUM_16, 0xff, 0x00,             // 255
-    REPORT_SIZE_8,  0x08,
-    REPORT_COUNT_8, 0x02,
-    FEATURE_8,      0x02,
+    // ----- Feature: PTPHQA Certification (0x08) -----------------------------
+    USAGE_PAGE_16, 0x00, 0xff, REPORT_ID_8, REPORTID_PTPHQA,
+    USAGE_8, 0xc5, LOGICAL_MINIMUM_8, 0x00, LOGICAL_MAXIMUM_16, 0xff, 0x00,
+    REPORT_SIZE_8, 0x08, REPORT_COUNT_16, 0x00, 0x01, FEATURE_8, 0x02,
 
-    // ----- Feature: PTPHQA Certification (report ID 0x08) -------------------
-    USAGE_PAGE_16,  0x00, 0xff,                 // Vendor Defined
-    REPORT_ID_8,    REPORTID_PTPHQA,
-    USAGE_8,        0xc5,
-    LOGICAL_MINIMUM_8, 0x00,
-    LOGICAL_MAXIMUM_16, 0xff, 0x00,             // 255
-    REPORT_SIZE_8,  0x08,
-    REPORT_COUNT_16, 0x00, 0x01,                // 256
-    FEATURE_8,      0x02,
-
-    END_COLLECTION,                             // End Touch Pad application
-
-    // =========================================================================
-    // TLC 2: Digitizer / Configuration
-    // =========================================================================
-    USAGE_PAGE_8,   0x0d,                       // Digitizer
-    USAGE_8,        0x0e,                       // Configuration
-    COLLECTION_8,   0x01,                       // Application
-
-    // ----- Feature: Input Mode (report ID 0x04) -----------------------------
-    REPORT_ID_8,    REPORTID_REPORTMODE,
-    USAGE_8,        0x22,                       // Finger
-    COLLECTION_8,   0x02,                       // Logical
-    USAGE_8,        0x52,                       //   Input Mode
-    LOGICAL_MINIMUM_8, 0x00,
-    LOGICAL_MAXIMUM_8, ptp::MAX_CONTACTS,
-    REPORT_SIZE_8,  0x08,
-    REPORT_COUNT_8, 0x01,
-    FEATURE_8,      0x02,
     END_COLLECTION,
 
-    // ----- Feature: Function Switch (report ID 0x06) ------------------------
-    COLLECTION_8,   0x00,                       // Physical
-    REPORT_ID_8,    REPORTID_FUNCSWITCH,
-    USAGE_8,        0x57,                       // Surface Switch
-    USAGE_8,        0x58,                       // Button Switch
-    REPORT_SIZE_8,  0x01,
-    REPORT_COUNT_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01,
-    FEATURE_8,      0x02,
-    REPORT_COUNT_8, 0x06,
-    FEATURE_8,      0x03,                       // Const padding
+    // =========================================================================
+    // TLC 4: Digitizer / Configuration
+    // =========================================================================
+    USAGE_PAGE_8, 0x0d, USAGE_8, 0x0e, COLLECTION_8, 0x01,
+
+    REPORT_ID_8, REPORTID_REPORTMODE,
+    USAGE_8, 0x22, COLLECTION_8, 0x02,
+    USAGE_8, 0x52, LOGICAL_MINIMUM_8, 0x00, LOGICAL_MAXIMUM_8, ptp::MAX_CONTACTS,
+    REPORT_SIZE_8, 0x08, REPORT_COUNT_8, 0x01, FEATURE_8, 0x02,
     END_COLLECTION,
 
-    END_COLLECTION,                             // End Configuration application
+    COLLECTION_8, 0x00, REPORT_ID_8, REPORTID_FUNCSWITCH,
+    USAGE_8, 0x57, USAGE_8, 0x58,
+    REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x02, LOGICAL_MAXIMUM_8, 0x01, FEATURE_8, 0x02,
+    REPORT_COUNT_8, 0x06, FEATURE_8, 0x03,
+    END_COLLECTION,
+
+    END_COLLECTION,
 ];
+
+// ---------------------------------------------------------------------------
+// Composite descriptor (concatenated at compile time)
+// ---------------------------------------------------------------------------
+
+/// Full composite HID report descriptor: keyboard + consumer + PTP + config.
+pub const COMPOSITE_REPORT_DESCRIPTOR: &[u8] = &{
+    const KB_LEN: usize = KEYBOARD_CONSUMER_DESCRIPTOR.len();
+    const PTP_LEN: usize = PTP_DESCRIPTOR.len();
+    const TOTAL: usize = KB_LEN + PTP_LEN;
+
+    let mut buf = [0u8; TOTAL];
+    let mut i = 0;
+    while i < KB_LEN {
+        buf[i] = KEYBOARD_CONSUMER_DESCRIPTOR[i];
+        i += 1;
+    }
+    while i < TOTAL {
+        buf[i] = PTP_DESCRIPTOR[i - KB_LEN];
+        i += 1;
+    }
+    buf
+};

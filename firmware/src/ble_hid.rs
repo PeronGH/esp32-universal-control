@@ -8,6 +8,7 @@ use esp32_nimble::{BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDev
 use log::info;
 use zerocopy::IntoBytes;
 
+use esp32_uc_protocol::keyboard::{KeyboardReport, REPORTID_CONSUMER, REPORTID_KEYBOARD};
 use esp32_uc_protocol::ptp::{
     self, PtpReport, REPORTID_DEVICE_CAPS, REPORTID_FUNCSWITCH, REPORTID_MULTITOUCH,
     REPORTID_PTPHQA, REPORTID_REPORTMODE,
@@ -15,10 +16,10 @@ use esp32_uc_protocol::ptp::{
 
 use crate::hid_descriptor;
 
-const DEVICE_NAME: &str = "ESP32 UC PTP";
+const DEVICE_NAME: &str = "ESP32 UC";
 
-/// BLE HID appearance: HID Touchpad (Generic HID 0x03C0 + subtype 0x05).
-const APPEARANCE_HID_TOUCHPAD: u16 = 0x03C5;
+/// BLE HID appearance: Generic HID.
+const APPEARANCE_HID: u16 = 0x03C0;
 
 /// PnP signature: USB Implementers Forum assigned vendor ID.
 const PNP_SIG_USB: u8 = 0x02;
@@ -70,14 +71,15 @@ const PTPHQA_BLOB: [u8; 256] = [
 
 /// Owns the NimBLE HID device and its report characteristics.
 pub struct BleHid {
+    keyboard_input: Arc<Mutex<BLECharacteristic>>,
+    #[allow(dead_code, reason = "will be used when host app sends consumer key events")]
+    consumer_input: Arc<Mutex<BLECharacteristic>>,
     touch_input: Arc<Mutex<BLECharacteristic>>,
 }
 
 impl BleHid {
-    /// Initialise BLE security, create the HID device with PTP report
-    /// characteristics, pre-load feature reports, and start advertising.
-    ///
-    /// NimBLE manages the BT controller and GATT server lifecycle internally.
+    /// Initialise BLE security, create the composite HID device (keyboard +
+    /// consumer + PTP), pre-load feature reports, and start advertising.
     pub fn init() -> anyhow::Result<Self> {
         let device = BLEDevice::take();
         BLEDevice::set_device_name(DEVICE_NAME)?;
@@ -91,6 +93,9 @@ impl BleHid {
         let mut hid = BLEHIDDevice::new(server);
 
         // --- Report characteristics ------------------------------------------
+        let keyboard_input = hid.input_report(REPORTID_KEYBOARD);
+        let _keyboard_output = hid.output_report(REPORTID_KEYBOARD);
+        let consumer_input = hid.input_report(REPORTID_CONSUMER);
         let touch_input = hid.input_report(REPORTID_MULTITOUCH);
         let input_mode = hid.feature_report(REPORTID_REPORTMODE);
         let _func_switch = hid.feature_report(REPORTID_FUNCSWITCH);
@@ -98,7 +103,7 @@ impl BleHid {
         let ptphqa = hid.feature_report(REPORTID_PTPHQA);
 
         // --- Device metadata -------------------------------------------------
-        hid.report_map(hid_descriptor::PTP_REPORT_DESCRIPTOR);
+        hid.report_map(hid_descriptor::COMPOSITE_REPORT_DESCRIPTOR);
         hid.manufacturer("esp32-universal-control");
         hid.pnp(PNP_SIG_USB, VENDOR_ID, PRODUCT_ID, DEVICE_VERSION);
         hid.hid_info(0x00, 0x01);
@@ -123,14 +128,18 @@ impl BleHid {
         adv.lock().set_data(
             BLEAdvertisementData::new()
                 .name(DEVICE_NAME)
-                .appearance(APPEARANCE_HID_TOUCHPAD)
+                .appearance(APPEARANCE_HID)
                 .add_service_uuid(hid.hid_service().lock().uuid()),
         )?;
         adv.lock().start()?;
 
         info!("BLE HID advertising as \"{DEVICE_NAME}\"");
 
-        Ok(Self { touch_input })
+        Ok(Self {
+            keyboard_input,
+            consumer_input,
+            touch_input,
+        })
     }
 
     /// Returns `true` when at least one BLE host is connected.
@@ -138,8 +147,23 @@ impl BleHid {
         BLEDevice::take().get_server().connected_count() > 0
     }
 
-    /// Send a PTP input report to the connected host.
-    pub fn send_report(&self, report: &PtpReport) {
+    /// Send a keyboard input report.
+    pub fn send_keyboard(&self, report: &KeyboardReport) {
+        let mut chr = self.keyboard_input.lock();
+        chr.set_value(report.as_bytes());
+        chr.notify();
+    }
+
+    /// Send a consumer control input report (16-bit bitfield, little-endian).
+    #[allow(dead_code, reason = "will be used when host app sends consumer key events")]
+    pub fn send_consumer(&self, bits: u16) {
+        let mut chr = self.consumer_input.lock();
+        chr.set_value(&bits.to_le_bytes());
+        chr.notify();
+    }
+
+    /// Send a PTP touch input report.
+    pub fn send_touch(&self, report: &PtpReport) {
         let mut chr = self.touch_input.lock();
         chr.set_value(report.as_bytes());
         chr.notify();

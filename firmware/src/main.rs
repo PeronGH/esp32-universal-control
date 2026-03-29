@@ -3,6 +3,7 @@ mod hid_descriptor;
 
 use std::time::Duration;
 
+use esp32_uc_protocol::keyboard::KeyboardReport;
 use esp32_uc_protocol::ptp::{PtpContact, PtpReport};
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -20,10 +21,19 @@ fn main() {
     }
 }
 
+/// USB HID keycode for each letter in "hello\n".
+const HELLO_KEYCODES: &[u8] = &[
+    0x0b, // h
+    0x08, // e
+    0x0f, // l
+    0x0f, // l
+    0x12, // o
+    0x28, // Enter
+];
+
 fn run() -> anyhow::Result<()> {
     info!("esp32-universal-control starting");
 
-    // NVS is required by the Bluetooth stack.
     let _nvs = EspDefaultNvsPartition::take()?;
     let _peripherals = Peripherals::take()?;
 
@@ -31,7 +41,6 @@ fn run() -> anyhow::Result<()> {
 
     info!("Waiting for BLE connection…");
 
-    // Demo: hardcoded single-finger horizontal sweep to verify PTP works.
     let mut x: u16 = 5000;
     let mut scan_time: u16 = 0;
 
@@ -42,6 +51,7 @@ fn run() -> anyhow::Result<()> {
             continue;
         }
 
+        // --- Touch: horizontal sweep ---
         let mut report = PtpReport {
             scan_time,
             ..PtpReport::default()
@@ -49,7 +59,6 @@ fn run() -> anyhow::Result<()> {
         scan_time = scan_time.wrapping_add(50);
 
         if x <= 15_000 {
-            // Finger down — sweep X across the touchpad.
             report.contacts[0] = PtpContact {
                 flags: PtpContact::FINGER_DOWN,
                 contact_id: 1,
@@ -58,14 +67,26 @@ fn run() -> anyhow::Result<()> {
             };
             report.contact_count = 1;
             x += 200;
+            ble.send_touch(&report);
         } else {
-            // Finger lifted — pause, then repeat.
-            ble.send_report(&report);
+            // Lift finger
+            ble.send_touch(&report);
+            std::thread::sleep(Duration::from_millis(500));
+
+            // --- Keyboard: type "hello\n" ---
+            for &keycode in HELLO_KEYCODES {
+                ble.send_keyboard(&KeyboardReport {
+                    keycodes: [keycode, 0, 0, 0, 0, 0],
+                    ..KeyboardReport::default()
+                });
+                std::thread::sleep(Duration::from_millis(20));
+                // Key release
+                ble.send_keyboard(&KeyboardReport::default());
+                std::thread::sleep(Duration::from_millis(20));
+            }
+
             std::thread::sleep(Duration::from_secs(2));
             x = 5000;
-            continue;
         }
-
-        ble.send_report(&report);
     }
 }
