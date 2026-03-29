@@ -166,19 +166,10 @@ fn handle_msg(ble: &ble_hid::BleHid, resp_tx: &mpsc::Sender<FirmwareMsg>, msg: H
         }
         HostMsg::Touch(mut report) => {
             if ble.connected() {
-                // scan_time = delta since last report in 100us units, capped
-                // at 0xFF. Computed here at delivery time so Windows gets
-                // accurate inter-report timing for velocity/inertia.
-                static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                let now =
-                    // SAFETY: esp_timer_get_time is always safe to call.
-                    (unsafe { esp_idf_svc::sys::esp_timer_get_time() } / 100) as u32;
-                let last = LAST.swap(now, std::sync::atomic::Ordering::Relaxed);
-                report.scan_time = if last > 0 {
-                    now.wrapping_sub(last).min(0xFF) as u16
-                } else {
-                    0
-                };
+                // Cumulative scan_time in 100us units, computed at delivery.
+                // SAFETY: esp_timer_get_time is always safe to call.
+                let us = unsafe { esp_idf_svc::sys::esp_timer_get_time() } as u64;
+                report.scan_time = (us / 100) as u16; // wraps at ~6.5s, expected by PTP
                 ble.send_touch(&report);
             }
         }
