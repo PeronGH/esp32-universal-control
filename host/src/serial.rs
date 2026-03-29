@@ -10,7 +10,7 @@ use postcard::accumulator::{CobsAccumulator, FeedResult};
 use serialport5::SerialPort;
 
 const BAUD_RATE: u32 = 921_600;
-const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(100);
+const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
 const HANDSHAKE_RETRIES: u32 = 5;
 const COBS_BUF_SIZE: usize = 128;

@@ -27,8 +27,8 @@ fn main() {
     }
 }
 
-/// UART read timeout while idle: 50 ms in FreeRTOS ticks (CONFIG_FREERTOS_HZ = 100).
-const IDLE_READ_TIMEOUT_TICKS: u32 = 5;
+/// UART read timeout while idle: 10 ms in FreeRTOS ticks (CONFIG_FREERTOS_HZ = 100).
+const IDLE_READ_TIMEOUT_TICKS: u32 = 1;
 /// Shorter UART read timeout while a touch frame is pending so BLE pacing can
 /// drain the latest frame without waiting for another serial packet.
 const ACTIVE_TOUCH_READ_TIMEOUT_TICKS: u32 = 1;
