@@ -80,6 +80,7 @@ impl BleHid {
     /// NimBLE manages the BT controller and GATT server lifecycle internally.
     pub fn init() -> anyhow::Result<Self> {
         let device = BLEDevice::take();
+        BLEDevice::set_device_name(DEVICE_NAME)?;
         device
             .security()
             .set_auth(AuthReq::Bond)
