@@ -2,9 +2,9 @@ mod ble_hid;
 mod hid_descriptor;
 
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
-use esp_idf_svc::hal::delay;
+use esp_idf_svc::hal::gpio;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::hal::usb_serial::UsbSerialDriver;
+use esp_idf_svc::hal::uart::{self, UartDriver};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::{error, info, warn};
 use postcard::accumulator::{CobsAccumulator, FeedResult};
@@ -21,8 +21,8 @@ fn main() {
     }
 }
 
-/// 50 ms timeout for USB serial reads, in FreeRTOS ticks.
-/// ESP-IDF default: CONFIG_FREERTOS_HZ = 100 → 10ms per tick → 5 ticks = 50ms.
+/// 50 ms read timeout in FreeRTOS ticks.
+/// ESP-IDF default CONFIG_FREERTOS_HZ = 100 → 10 ms/tick → 5 ticks = 50 ms.
 const READ_TIMEOUT_TICKS: u32 = 5;
 
 fn run() -> anyhow::Result<()> {
@@ -33,28 +33,30 @@ fn run() -> anyhow::Result<()> {
 
     let ble = ble_hid::BleHid::init()?;
 
-    // USB-Serial-JTAG — the second serial port visible on the Mac through
-    // the CH334 hub. Console logs go to UART0/CH343 (the first port);
-    // this port is dedicated to host ↔ firmware data.
-    let mut usb_serial = UsbSerialDriver::new(
-        peripherals.usb_serial,
-        peripherals.pins.gpio19,
-        peripherals.pins.gpio20,
-        &Default::default(),
+    // UART0 (GPIO43 TX, GPIO44 RX) → CH343 → "USB Single Serial" port.
+    // Console/logs go to USB-Serial-JTAG (CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG),
+    // so UART0 is clean for host data.
+    let uart = UartDriver::new(
+        peripherals.uart0,
+        peripherals.pins.gpio43,
+        peripherals.pins.gpio44,
+        Option::<gpio::AnyIOPin>::None,
+        Option::<gpio::AnyIOPin>::None,
+        &uart::config::Config::new(),
     )?;
 
-    info!("USB-Serial-JTAG ready, waiting for host messages…");
+    info!("UART0 ready, waiting for host messages…");
 
     let mut cobs_buf: CobsAccumulator<128> = CobsAccumulator::new();
     let mut read_buf = [0u8; 64];
 
     loop {
-        // Non-blocking-ish read: timeout so we can drain BLE events.
-        let n = usb_serial.read(&mut read_buf, READ_TIMEOUT_TICKS)?;
+        // Timeout read so we can drain BLE events between reads.
+        let n = uart.read(&mut read_buf, READ_TIMEOUT_TICKS)?;
 
-        // Drain BLE connection events and forward to host.
+        // Forward BLE connection events to host.
         while let Ok(msg) = ble.event_rx.try_recv() {
-            send_to_host(&mut usb_serial, &msg);
+            send_to_host(&uart, &msg);
         }
 
         if n == 0 {
@@ -74,7 +76,7 @@ fn run() -> anyhow::Result<()> {
                     remaining
                 }
                 FeedResult::Success { data, remaining } => {
-                    handle_msg(&ble, &mut usb_serial, data);
+                    handle_msg(&ble, &uart, data);
                     remaining
                 }
             };
@@ -82,8 +84,8 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-/// Send a `FirmwareMsg` to the host over USB-Serial-JTAG, handling partial writes.
-fn send_to_host(usb: &mut UsbSerialDriver<'_>, msg: &FirmwareMsg) {
+/// Send a `FirmwareMsg` to the host over UART0, handling partial writes.
+fn send_to_host(uart: &UartDriver<'_>, msg: &FirmwareMsg) {
     let mut buf = [0u8; 64];
     let encoded = match postcard::to_slice_cobs(msg, &mut buf) {
         Ok(encoded) => encoded,
@@ -95,17 +97,17 @@ fn send_to_host(usb: &mut UsbSerialDriver<'_>, msg: &FirmwareMsg) {
 
     let mut offset = 0;
     while offset < encoded.len() {
-        match usb.write(&encoded[offset..], delay::BLOCK) {
+        match uart.write(&encoded[offset..]) {
             Ok(n) => offset += n,
             Err(e) => {
-                warn!("USB serial write failed: {e}");
+                warn!("UART write failed: {e}");
                 return;
             }
         }
     }
 }
 
-fn handle_msg(ble: &ble_hid::BleHid, usb: &mut UsbSerialDriver<'_>, msg: HostMsg) {
+fn handle_msg(ble: &ble_hid::BleHid, uart: &UartDriver<'_>, msg: HostMsg) {
     match msg {
         HostMsg::Keyboard(report) => {
             if ble.connected() {
@@ -131,7 +133,7 @@ fn handle_msg(ble: &ble_hid::BleHid, usb: &mut UsbSerialDriver<'_>, msg: HostMsg
         HostMsg::QuerySlots => {
             for (slot, desc) in ble.connections().enumerate() {
                 send_to_host(
-                    usb,
+                    uart,
                     &FirmwareMsg::SlotStatus {
                         slot: slot as u8,
                         addr: desc.address().as_le_bytes(),
