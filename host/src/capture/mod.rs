@@ -26,10 +26,27 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
     serial::handshake(&mut write_port, &fw_rx)?;
 
     info!("Real capture mode — forwarding keyboard + trackpad to firmware");
-    info!("Ctrl+Shift+F1-F4 to switch active slot");
 
     // Shared slot table — updated by fw-events thread, read by keyboard hotkey.
     let slots = Arc::new(Mutex::new(SlotTable::new()));
+
+    // Query existing connections so we know about devices that connected
+    // before the host started.
+    serial::send(&mut write_port, &HostMsg::QueryConnections)?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    while let Ok(msg) = fw_rx.try_recv() {
+        if let FirmwareMsg::ConnectionStatus { addr, connected } = msg
+            && connected
+        {
+            let mut table = slots.lock().expect("poisoned");
+            let slot = table.connect(addr);
+            info!(
+                "BLE slot {slot}: {} (already connected)",
+                serial::format_addr(&addr)
+            );
+        }
+    }
+    slots.lock().expect("poisoned").print_status();
 
     // Channel for captured input events → serial writer.
     let (input_tx, input_rx) = mpsc::channel::<HostMsg>();

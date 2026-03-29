@@ -34,7 +34,6 @@ pub fn run(
     slots: Arc<Mutex<SlotTable>>,
 ) -> anyhow::Result<()> {
     info!("Starting keyboard + click capture (CGEventTap)");
-    info!("Ctrl+Shift+F1 = Mac | Ctrl+Shift+F2-F5 = remote slots 0-3");
 
     let tap = CGEventTap::new(
         CGEventTapLocation::HID,

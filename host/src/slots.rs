@@ -82,22 +82,25 @@ impl SlotTable {
         self.switch_to_remote(slot)
     }
 
-    /// Print all slots to stderr, marking the active target.
+    /// Print active target and connected slots to stderr.
+    /// Only shows slots that have a device. Each slot shows its hotkey.
     pub fn print_status(&self) {
         let forwarding = self.is_forwarding();
         let active = self.active();
         let mac_marker = if !forwarding { "▶" } else { " " };
-        eprintln!("{mac_marker} Mac (local)");
+        eprintln!("{mac_marker} Mac (Ctrl+Shift+F1)");
         for (i, slot) in self.slots.iter().enumerate() {
+            let Some(addr) = slot else { continue };
             let marker = if forwarding && i == active {
                 "▶"
             } else {
                 " "
             };
-            match slot {
-                Some(addr) => eprintln!("{marker} slot {i}: {}", serial::format_addr(addr)),
-                None => eprintln!("{marker} slot {i}: ---"),
-            }
+            let fkey = i + 2; // slot 0 = F2, slot 1 = F3, ...
+            eprintln!(
+                "{marker} slot {i}: {} (Ctrl+Shift+F{fkey})",
+                serial::format_addr(addr)
+            );
         }
     }
 }
