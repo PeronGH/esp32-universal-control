@@ -87,6 +87,9 @@ static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 static CLICK_STATE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 static SLOTS: std::sync::OnceLock<Arc<std::sync::Mutex<crate::slots::SlotTable>>> =
     std::sync::OnceLock::new();
+/// Track whether the previous frame had active contacts, so we send
+/// exactly one lift report when all fingers leave.
+static HAD_CONTACTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 unsafe extern "C" fn mt_callback(
     _device: MTDeviceRef,
@@ -103,7 +106,6 @@ unsafe extern "C" fn mt_callback(
         return 0;
     }
     let Some(tx) = TX.get() else { return 0 };
-
     let touch_slice = if touch_count > 0 && !touches.is_null() {
         unsafe { std::slice::from_raw_parts(touches, touch_count as usize) }
     } else {
@@ -143,7 +145,16 @@ unsafe extern "C" fn mt_callback(
     }
     report.contact_count = active as u8;
 
-    let _ = tx.send(HostMsg::Touch(report));
+    let had = HAD_CONTACTS.load(Ordering::Relaxed);
+    if active > 0 {
+        HAD_CONTACTS.store(true, Ordering::Relaxed);
+        let _ = tx.send(HostMsg::Touch(report));
+    } else if had {
+        // Send exactly one lift report, then stop until next touch.
+        HAD_CONTACTS.store(false, Ordering::Relaxed);
+        let _ = tx.send(HostMsg::Touch(report));
+    }
+    // When active==0 and had==false, don't send (no redundant empty frames).
 
     // Return non-zero to consume the touch data and prevent system gestures.
     1
