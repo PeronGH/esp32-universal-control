@@ -12,6 +12,7 @@ use core_foundation::base::TCFType;
 use core_foundation::mach_port::CFMachPortRef;
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
 use core_graphics::event::*;
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use log::info;
 
 use esp32_uc_protocol::input::{ConsumerState, KeyboardSnapshot};
@@ -84,7 +85,16 @@ struct CaptureState {
     keyboard: KeyboardSnapshot,
     consumer: ConsumerState,
     hotkey_keyup: Option<u16>,
-    escape_held: bool,
+    escape_state: EscapeState,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum EscapeState {
+    #[default]
+    Idle,
+    Pending,
+    Forwarded,
+    ChordUsed,
 }
 
 impl CaptureState {
@@ -108,9 +118,6 @@ impl CaptureState {
 
     fn handle_key_down(&mut self, event: &CGEvent) -> Option<HostMsg> {
         let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-        if keycode == MAC_ESCAPE {
-            self.escape_held = true;
-        }
         if let Some(bit) = keymap::mac_to_consumer(keycode) {
             let next = self.consumer | bit;
             if next != self.consumer {
@@ -121,36 +128,11 @@ impl CaptureState {
         }
 
         let hid = keymap::mac_to_hid(keycode);
-        if hid == 0 {
-            return None;
-        }
-
-        if let Some(mask) = modifier_mask_from_hid(hid) {
-            let next = self.keyboard.modifiers | mask;
-            if next != self.keyboard.modifiers {
-                self.keyboard.modifiers = next;
-                return Some(HostMsg::KeyboardState(self.keyboard));
-            }
-            return None;
-        }
-
-        if self.keyboard.keys.contains(&hid) {
-            return None;
-        }
-
-        if let Some(slot) = self.keyboard.keys.iter_mut().find(|slot| **slot == 0) {
-            *slot = hid;
-            return Some(HostMsg::KeyboardState(self.keyboard));
-        }
-
-        None
+        self.update_hid_key_state(hid, true)
     }
 
     fn handle_key_up(&mut self, event: &CGEvent) -> Option<HostMsg> {
         let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-        if keycode == MAC_ESCAPE {
-            self.escape_held = false;
-        }
         if let Some(bit) = keymap::mac_to_consumer(keycode) {
             let next = self.consumer & !bit;
             if next != self.consumer {
@@ -161,12 +143,20 @@ impl CaptureState {
         }
 
         let hid = keymap::mac_to_hid(keycode);
+        self.update_hid_key_state(hid, false)
+    }
+
+    fn update_hid_key_state(&mut self, hid: u8, pressed: bool) -> Option<HostMsg> {
         if hid == 0 {
             return None;
         }
 
         if let Some(mask) = modifier_mask_from_hid(hid) {
-            let next = self.keyboard.modifiers & !mask;
+            let next = if pressed {
+                self.keyboard.modifiers | mask
+            } else {
+                self.keyboard.modifiers & !mask
+            };
             if next != self.keyboard.modifiers {
                 self.keyboard.modifiers = next;
                 return Some(HostMsg::KeyboardState(self.keyboard));
@@ -174,12 +164,18 @@ impl CaptureState {
             return None;
         }
 
-        if let Some(idx) = self
-            .keyboard
-            .keys
-            .iter()
-            .position(|current| *current == hid)
-        {
+        if pressed {
+            if self.keyboard.keys.contains(&hid) {
+                return None;
+            }
+            if let Some(slot) = self.keyboard.keys.iter_mut().find(|slot| **slot == 0) {
+                *slot = hid;
+                return Some(HostMsg::KeyboardState(self.keyboard));
+            }
+            return None;
+        }
+
+        if let Some(idx) = self.keyboard.keys.iter().position(|current| *current == hid) {
             self.keyboard.keys.copy_within((idx + 1).., idx);
             self.keyboard.keys[self.keyboard.keys.len() - 1] = 0;
             return Some(HostMsg::KeyboardState(self.keyboard));
@@ -241,6 +237,60 @@ fn apply_modifier_transition(current: u8, mask: u8, generic_pressed: bool) -> u8
     }
 }
 
+fn emit_local_escape(keydown: bool) {
+    let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
+        return;
+    };
+    let Ok(event) = CGEvent::new_keyboard_event(source, MAC_ESCAPE, keydown) else {
+        return;
+    };
+    event.post(CGEventTapLocation::HID);
+}
+
+fn flush_pending_escape(state: &mut CaptureState, tx: &Outbox, forwarding: bool) {
+    if forwarding {
+        if let Some(msg) = state.update_hid_key_state(keymap::mac_to_hid(MAC_ESCAPE), true) {
+            tx.push(msg);
+        }
+    } else {
+        emit_local_escape(true);
+    }
+    state.escape_state = EscapeState::Forwarded;
+}
+
+fn finish_escape(state: &mut CaptureState, tx: &Outbox, forwarding: bool) {
+    match state.escape_state {
+        EscapeState::Pending => {
+            if forwarding {
+                if let Some(msg) = state.update_hid_key_state(keymap::mac_to_hid(MAC_ESCAPE), true)
+                {
+                    tx.push(msg);
+                }
+                if let Some(msg) =
+                    state.update_hid_key_state(keymap::mac_to_hid(MAC_ESCAPE), false)
+                {
+                    tx.push(msg);
+                }
+            } else {
+                emit_local_escape(true);
+                emit_local_escape(false);
+            }
+        }
+        EscapeState::Forwarded => {
+            if forwarding {
+                if let Some(msg) = state.update_hid_key_state(keymap::mac_to_hid(MAC_ESCAPE), false)
+                {
+                    tx.push(msg);
+                }
+            } else {
+                emit_local_escape(false);
+            }
+        }
+        EscapeState::ChordUsed | EscapeState::Idle => {}
+    }
+    state.escape_state = EscapeState::Idle;
+}
+
 /// Start keyboard + mouse capture. Blocks the calling thread (runs CFRunLoop).
 pub fn run(
     tx: Arc<Outbox>,
@@ -292,25 +342,39 @@ pub fn run(
                 CGEventType::KeyDown => {
                     let keycode =
                         event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+                    if keycode == MAC_ESCAPE {
+                        state.borrow_mut().escape_state = EscapeState::Pending;
+                        return CallbackResult::Drop;
+                    }
+
                     // Hotkeys always processed (locks mutex, but rare).
                     if handle_slot_hotkey(event, &state, &slots, &tx) {
                         state.borrow_mut().arm_hotkey_keyup(keycode);
-                        return CallbackResult::Keep;
+                        state.borrow_mut().escape_state = EscapeState::ChordUsed;
+                        return CallbackResult::Drop;
                     }
+
+                    if state.borrow().escape_state == EscapeState::Pending {
+                        flush_pending_escape(&mut state.borrow_mut(), &tx, fwd);
+                    }
+
                     if fwd {
                         if let Some(msg) = state.borrow_mut().handle_key_down(event) {
                             tx.push(msg);
                         }
-                        CallbackResult::Drop
-                    } else {
-                        CallbackResult::Keep
+                        return CallbackResult::Drop;
                     }
+                    CallbackResult::Keep
                 }
                 CGEventType::KeyUp => {
                     let keycode =
                         event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
+                    if keycode == MAC_ESCAPE {
+                        finish_escape(&mut state.borrow_mut(), &tx, fwd);
+                        return CallbackResult::Drop;
+                    }
                     if state.borrow_mut().consume_hotkey_keyup(keycode) {
-                        return CallbackResult::Keep;
+                        return CallbackResult::Drop;
                     }
                     if fwd {
                         if let Some(msg) = state.borrow_mut().handle_key_up(event) {
@@ -387,7 +451,7 @@ fn handle_slot_hotkey(
     slots: &Mutex<SlotTable>,
     tx: &Outbox,
 ) -> bool {
-    if !state.borrow().escape_held {
+    if state.borrow().escape_state != EscapeState::Pending {
         return false;
     }
 
