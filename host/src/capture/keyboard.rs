@@ -1,11 +1,12 @@
-//! Keyboard capture via CGEventTap.
+//! Keyboard + click capture via CGEventTap.
 //!
-//! Creates an event tap at the HID level that observes all key events.
-//! Translates macOS virtual keycodes to USB HID keycodes and sends
-//! `HostMsg::Keyboard` reports over the serial channel.
-//!
-//! Must run on a thread with an active CFRunLoop.
+//! Creates an event tap at the HID level that observes key events and
+//! trackpad click events. Key events are translated to USB HID and sent
+//! as `HostMsg::Keyboard`. Click state is shared with the trackpad module
+//! via an `AtomicBool`.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
@@ -17,13 +18,11 @@ use esp32_uc_protocol::wire::HostMsg;
 
 use super::keymap;
 
-/// Maximum simultaneous non-modifier keys in a USB HID keyboard report.
 const MAX_KEYS: usize = 6;
 
-/// Start keyboard capture. Blocks the calling thread (runs CFRunLoop).
-/// Key events are translated and sent to `tx`.
-pub fn run(tx: mpsc::Sender<HostMsg>) -> anyhow::Result<()> {
-    info!("Starting keyboard capture (CGEventTap)");
+/// Start keyboard + click capture. Blocks the calling thread (runs CFRunLoop).
+pub fn run(tx: mpsc::Sender<HostMsg>, click_state: Arc<AtomicBool>) -> anyhow::Result<()> {
+    info!("Starting keyboard + click capture (CGEventTap)");
 
     let tap = CGEventTap::new(
         CGEventTapLocation::HID,
@@ -33,12 +32,24 @@ pub fn run(tx: mpsc::Sender<HostMsg>) -> anyhow::Result<()> {
             CGEventType::KeyDown,
             CGEventType::KeyUp,
             CGEventType::FlagsChanged,
+            CGEventType::LeftMouseDown,
+            CGEventType::LeftMouseUp,
         ],
         move |_proxy, event_type, event| {
-            if let Some(msg) = translate_event(event_type, event)
-                && tx.send(msg).is_err()
-            {
-                warn!("Keyboard channel closed");
+            match event_type {
+                CGEventType::LeftMouseDown => {
+                    click_state.store(true, Ordering::Release);
+                }
+                CGEventType::LeftMouseUp => {
+                    click_state.store(false, Ordering::Release);
+                }
+                _ => {
+                    if let Some(msg) = translate_key_event(event_type, event)
+                        && tx.send(msg).is_err()
+                    {
+                        warn!("Keyboard channel closed");
+                    }
+                }
             }
             CallbackResult::Keep
         },
@@ -47,9 +58,6 @@ pub fn run(tx: mpsc::Sender<HostMsg>) -> anyhow::Result<()> {
         anyhow::anyhow!("Failed to create CGEventTap — is Accessibility permission granted?")
     })?;
 
-    // Add the tap's mach port as a source on the current run loop.
-    // CGEventTap::new() creates the tap but does NOT add it to any
-    // run loop — without this, events never arrive.
     let loop_source = tap
         .mach_port()
         .create_runloop_source(0)
@@ -64,7 +72,7 @@ pub fn run(tx: mpsc::Sender<HostMsg>) -> anyhow::Result<()> {
 }
 
 /// Translate a macOS keyboard event to a `HostMsg::Keyboard`.
-fn translate_event(event_type: CGEventType, event: &CGEvent) -> Option<HostMsg> {
+fn translate_key_event(event_type: CGEventType, event: &CGEvent) -> Option<HostMsg> {
     let mac_keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
     let flags = event.get_flags();
     let modifiers = keymap::flags_to_hid_modifiers(flags.bits());
@@ -72,7 +80,6 @@ fn translate_event(event_type: CGEventType, event: &CGEvent) -> Option<HostMsg> 
     match event_type {
         CGEventType::KeyDown => {
             let hid_key = keymap::mac_to_hid(mac_keycode);
-            // Modifier-only keys (0xE0+) are handled via FlagsChanged, skip here.
             if hid_key >= 0xE0 {
                 return None;
             }
@@ -87,22 +94,17 @@ fn translate_event(event_type: CGEventType, event: &CGEvent) -> Option<HostMsg> 
             if hid_key >= 0xE0 {
                 return None;
             }
-            // Key release: send report with the key removed.
-            // For simplicity, send an empty keycodes array with current modifiers.
             Some(HostMsg::Keyboard(KeyboardReport {
                 modifiers,
                 reserved: 0,
                 keycodes: [0; MAX_KEYS],
             }))
         }
-        CGEventType::FlagsChanged => {
-            // Modifier change only — send report with updated modifiers, no keys.
-            Some(HostMsg::Keyboard(KeyboardReport {
-                modifiers,
-                reserved: 0,
-                keycodes: [0; MAX_KEYS],
-            }))
-        }
+        CGEventType::FlagsChanged => Some(HostMsg::Keyboard(KeyboardReport {
+            modifiers,
+            reserved: 0,
+            keycodes: [0; MAX_KEYS],
+        })),
         _ => None,
     }
 }

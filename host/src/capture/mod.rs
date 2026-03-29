@@ -4,6 +4,8 @@ mod keyboard;
 mod keymap;
 mod trackpad;
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
 use anyhow::Context;
@@ -61,18 +63,23 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
             }
         })?;
 
-    // Keyboard capture thread (needs its own CFRunLoop).
+    // Shared click state: CGEventTap detects trackpad clicks,
+    // trackpad callback reads it to set the PTP button field.
+    let click_state = Arc::new(AtomicBool::new(false));
+
+    // Keyboard + click capture thread (needs its own CFRunLoop).
     let kb_tx = input_tx.clone();
+    let click = Arc::clone(&click_state);
     std::thread::Builder::new()
         .name("keyboard".into())
         .spawn(move || {
-            if let Err(e) = keyboard::run(kb_tx) {
+            if let Err(e) = keyboard::run(kb_tx, click) {
                 log::error!("Keyboard capture failed: {e}");
             }
         })?;
 
     // Trackpad capture on this thread (runs its own CFRunLoop).
-    trackpad::run(input_tx)?;
+    trackpad::run(input_tx, click_state)?;
 
     Ok(())
 }

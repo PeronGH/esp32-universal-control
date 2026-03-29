@@ -6,6 +6,8 @@
 //! `HostMsg::Touch` reports over the serial channel.
 
 use std::ffi::c_void;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -74,6 +76,7 @@ const PTP_Y_MAX: f32 = 12_000.0;
 
 static TX: std::sync::OnceLock<mpsc::Sender<HostMsg>> = std::sync::OnceLock::new();
 static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+static CLICK_STATE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 
 unsafe extern "C" fn mt_callback(
     _device: MTDeviceRef,
@@ -92,24 +95,33 @@ unsafe extern "C" fn mt_callback(
     // Scan time in 100µs units since start, wrapping at u16::MAX.
     let start = START_TIME.get_or_init(Instant::now);
     let scan_time = (start.elapsed().as_micros() / 100) as u16;
+    // Read click state from CGEventTap (shared AtomicBool).
+    let clicked = CLICK_STATE.get().is_some_and(|b| b.load(Ordering::Acquire));
+
     let mut report = PtpReport {
         scan_time,
+        button: clicked as u8,
         ..PtpReport::default()
     };
 
-    // Only include fingers with state == 4 (touching).
+    // Include fingers that are touching (state 4) or in transition
+    // (state 3 = hover start). State 4 gets tip_switch; state 3 gets
+    // confidence only (allows Windows to track approaching fingers
+    // for gesture recognition).
     let mut active = 0usize;
     for f in finger_slice {
-        if f.state != 4 || active >= ptp::MAX_CONTACTS as usize {
-            continue;
+        if active >= ptp::MAX_CONTACTS as usize {
+            break;
         }
-        report.contacts[active] = PtpContact {
-            flags: PtpContact::FINGER_DOWN,
-            contact_id: f.identifier as u32,
-            x: (f.normalized_pos.x * PTP_X_MAX) as u16,
-            y: ((1.0 - f.normalized_pos.y) * PTP_Y_MAX) as u16,
-        };
-        active += 1;
+        if f.state == 4 {
+            report.contacts[active] = PtpContact {
+                flags: PtpContact::FINGER_DOWN,
+                contact_id: f.identifier as u32,
+                x: (f.normalized_pos.x * PTP_X_MAX) as u16,
+                y: ((1.0 - f.normalized_pos.y) * PTP_Y_MAX) as u16,
+            };
+            active += 1;
+        }
     }
     report.contact_count = active as u8;
 
@@ -118,11 +130,14 @@ unsafe extern "C" fn mt_callback(
 
 /// Start trackpad capture. Blocks the calling thread.
 /// Touch events are translated to PTP reports and sent to `tx`.
-pub fn run(tx: mpsc::Sender<HostMsg>) -> anyhow::Result<()> {
+pub fn run(tx: mpsc::Sender<HostMsg>, click: Arc<AtomicBool>) -> anyhow::Result<()> {
     info!("Starting trackpad capture (MultitouchSupport.framework)");
 
     TX.set(tx)
         .map_err(|_| anyhow::anyhow!("trackpad TX already initialized"))?;
+    CLICK_STATE
+        .set(click)
+        .map_err(|_| anyhow::anyhow!("trackpad click state already initialized"))?;
 
     let lib = unsafe {
         libloading::Library::new(
