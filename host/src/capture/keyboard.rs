@@ -124,7 +124,7 @@ pub fn run(
             match event_type {
                 CGEventType::KeyDown => {
                     // Hotkeys always processed (locks mutex, but rare).
-                    if handle_slot_hotkey(event, &slots) {
+                    if handle_slot_hotkey(event, &slots, &tx) {
                         return CallbackResult::Keep;
                     }
                     if fwd {
@@ -206,7 +206,11 @@ pub fn run(
 }
 
 /// Check if a KeyDown is Ctrl+Opt+1-5. If so, switch target and return true.
-fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
+fn handle_slot_hotkey(
+    event: &CGEvent,
+    slots: &Mutex<SlotTable>,
+    tx: &mpsc::Sender<HostMsg>,
+) -> bool {
     let flags = event.get_flags();
     let ctrl_opt = CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagAlternate;
     if !flags.contains(ctrl_opt) {
@@ -215,6 +219,9 @@ fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
 
     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
     let table = slots.lock().expect("poisoned");
+
+    // If currently forwarding to remote, release all keys on Windows before switching.
+    let was_forwarding = table.is_forwarding();
 
     let switched = match keycode {
         MAC_1 => {
@@ -242,12 +249,18 @@ fn handle_slot_hotkey(event: &CGEvent, slots: &Mutex<SlotTable>) -> bool {
         _ => false,
     };
 
-    if switched && table.is_forwarding() {
-        hide_mac_cursor();
-        info!("Switched to remote slot {}", table.active());
-    }
-
     if switched {
+        // Release all keys on Windows when leaving a remote slot,
+        // or when switching between remote slots.
+        if was_forwarding {
+            let _ = tx.send(HostMsg::Keyboard(KeyboardReport::default()));
+        }
+
+        if table.is_forwarding() {
+            hide_mac_cursor();
+            info!("Switched to remote slot {}", table.active());
+        }
+
         table.print_status();
     }
 
