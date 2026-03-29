@@ -67,7 +67,8 @@ struct MTTouch {
 
 const _: () = assert!(size_of::<MTTouch>() == 96);
 
-type MTContactCallbackFn = unsafe extern "C" fn(MTDeviceRef, *const MTTouch, i32, f64, i32);
+/// Callback return: 0 = pass through to system, non-zero = consume (blocks system gestures).
+type MTContactCallbackFn = unsafe extern "C" fn(MTDeviceRef, *const MTTouch, i32, f64, i32) -> i32;
 
 // ---------------------------------------------------------------------------
 // PTP coordinate translation constants
@@ -93,14 +94,15 @@ unsafe extern "C" fn mt_callback(
     touch_count: i32,
     _timestamp: f64,
     _frame: i32,
-) {
-    // Skip when targeting Mac so the native trackpad works.
-    if let Some(slots) = SLOTS.get()
-        && !slots.lock().expect("poisoned").is_forwarding()
-    {
-        return;
+) -> i32 {
+    // When targeting Mac, pass through to system (return 0).
+    let forwarding = SLOTS
+        .get()
+        .is_some_and(|s| s.lock().expect("poisoned").is_forwarding());
+    if !forwarding {
+        return 0;
     }
-    let Some(tx) = TX.get() else { return };
+    let Some(tx) = TX.get() else { return 0 };
     let touch_slice = if touch_count > 0 && !touches.is_null() {
         unsafe { std::slice::from_raw_parts(touches, touch_count as usize) }
     } else {
@@ -141,6 +143,9 @@ unsafe extern "C" fn mt_callback(
     report.contact_count = active as u8;
 
     let _ = tx.send(HostMsg::Touch(report));
+
+    // Return non-zero to consume the touch data and prevent system gestures.
+    1
 }
 
 /// Start trackpad capture. Blocks the calling thread.
