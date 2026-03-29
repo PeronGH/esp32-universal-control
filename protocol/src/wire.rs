@@ -18,6 +18,9 @@ pub enum HostMsg {
     /// Send a keyboard HID report to the active BLE slot.
     Keyboard(KeyboardReport),
 
+    /// Send a consumer control report (16-bit media key bitfield).
+    Consumer(u16),
+
     /// Send a PTP touch report to the active BLE slot.
     Touch(PtpReport),
 

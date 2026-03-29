@@ -2,6 +2,7 @@ mod ble_hid;
 mod hid_descriptor;
 
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
+use esp_idf_svc::hal::delay;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::usb_serial::UsbSerialDriver;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -19,6 +20,10 @@ fn main() {
         }
     }
 }
+
+/// 50 ms timeout for USB serial reads, in FreeRTOS ticks.
+/// ESP-IDF default: CONFIG_FREERTOS_HZ = 100 → 10ms per tick → 5 ticks = 50ms.
+const READ_TIMEOUT_TICKS: u32 = 5;
 
 fn run() -> anyhow::Result<()> {
     info!("esp32-universal-control starting");
@@ -44,7 +49,14 @@ fn run() -> anyhow::Result<()> {
     let mut read_buf = [0u8; 64];
 
     loop {
-        let n = usb_serial.read(&mut read_buf, esp_idf_svc::hal::delay::BLOCK)?;
+        // Non-blocking-ish read: timeout so we can drain BLE events.
+        let n = usb_serial.read(&mut read_buf, READ_TIMEOUT_TICKS)?;
+
+        // Drain BLE connection events and forward to host.
+        while let Ok(msg) = ble.event_rx.try_recv() {
+            send_to_host(&mut usb_serial, &msg);
+        }
+
         if n == 0 {
             continue;
         }
@@ -70,16 +82,26 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-/// Send a `FirmwareMsg` back to the host over USB-Serial-JTAG.
+/// Send a `FirmwareMsg` to the host over USB-Serial-JTAG, handling partial writes.
 fn send_to_host(usb: &mut UsbSerialDriver<'_>, msg: &FirmwareMsg) {
     let mut buf = [0u8; 64];
-    match postcard::to_slice_cobs(msg, &mut buf) {
-        Ok(encoded) => {
-            if let Err(e) = usb.write(encoded, esp_idf_svc::hal::delay::BLOCK) {
+    let encoded = match postcard::to_slice_cobs(msg, &mut buf) {
+        Ok(encoded) => encoded,
+        Err(e) => {
+            warn!("postcard encode failed: {e}");
+            return;
+        }
+    };
+
+    let mut offset = 0;
+    while offset < encoded.len() {
+        match usb.write(&encoded[offset..], delay::BLOCK) {
+            Ok(n) => offset += n,
+            Err(e) => {
                 warn!("USB serial write failed: {e}");
+                return;
             }
         }
-        Err(e) => warn!("postcard encode failed: {e}"),
     }
 }
 
@@ -88,6 +110,11 @@ fn handle_msg(ble: &ble_hid::BleHid, usb: &mut UsbSerialDriver<'_>, msg: HostMsg
         HostMsg::Keyboard(report) => {
             if ble.connected() {
                 ble.send_keyboard(&report);
+            }
+        }
+        HostMsg::Consumer(bits) => {
+            if ble.connected() {
+                ble.send_consumer(bits);
             }
         }
         HostMsg::Touch(report) => {

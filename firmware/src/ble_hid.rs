@@ -1,5 +1,6 @@
 //! BLE HID device using NimBLE: advertising, HOGP setup, and report sending.
 
+use std::sync::mpsc;
 use std::sync::Arc;
 
 use esp32_nimble::enums::*;
@@ -13,6 +14,7 @@ use esp32_uc_protocol::ptp::{
     self, PtpReport, REPORTID_DEVICE_CAPS, REPORTID_FUNCSWITCH, REPORTID_MULTITOUCH,
     REPORTID_PTPHQA, REPORTID_REPORTMODE,
 };
+use esp32_uc_protocol::wire::FirmwareMsg;
 
 use crate::hid_descriptor;
 
@@ -72,12 +74,10 @@ const PTPHQA_BLOB: [u8; 256] = [
 /// Owns the NimBLE HID device and its report characteristics.
 pub struct BleHid {
     keyboard_input: Arc<Mutex<BLECharacteristic>>,
-    #[allow(
-        dead_code,
-        reason = "will be used when host app sends consumer key events"
-    )]
     consumer_input: Arc<Mutex<BLECharacteristic>>,
     touch_input: Arc<Mutex<BLECharacteristic>>,
+    /// Receives `FirmwareMsg` from BLE callbacks (connect/disconnect).
+    pub event_rx: mpsc::Receiver<FirmwareMsg>,
 }
 
 impl BleHid {
@@ -92,7 +92,30 @@ impl BleHid {
             .set_io_cap(SecurityIOCap::NoInputNoOutput)
             .resolve_rpa();
 
+        let (event_tx, event_rx) = mpsc::channel::<FirmwareMsg>();
+
         let server = device.get_server();
+
+        // Proactive connection status push to host.
+        let tx = event_tx.clone();
+        server.on_connect(move |server, desc| {
+            info!("BLE connected: {:?}", desc.address());
+            let _ = tx.send(FirmwareMsg::SlotStatus {
+                slot: (server.connected_count() - 1) as u8,
+                addr: desc.address().as_le_bytes(),
+                connected: true,
+            });
+        });
+        let tx = event_tx;
+        server.on_disconnect(move |desc, _reason| {
+            info!("BLE disconnected: {:?}", desc.address());
+            let _ = tx.send(FirmwareMsg::SlotStatus {
+                slot: 0,
+                addr: desc.address().as_le_bytes(),
+                connected: false,
+            });
+        });
+
         let mut hid = BLEHIDDevice::new(server);
 
         // --- Report characteristics ------------------------------------------
@@ -142,6 +165,7 @@ impl BleHid {
             keyboard_input,
             consumer_input,
             touch_input,
+            event_rx,
         })
     }
 
@@ -163,10 +187,6 @@ impl BleHid {
     }
 
     /// Send a consumer control input report (16-bit bitfield, little-endian).
-    #[allow(
-        dead_code,
-        reason = "will be used when host app sends consumer key events"
-    )]
     pub fn send_consumer(&self, bits: u16) {
         let mut chr = self.consumer_input.lock();
         chr.set_value(&bits.to_le_bytes());
