@@ -1,5 +1,6 @@
 //! Real capture mode: keyboard + trackpad → serial → firmware → BLE.
 
+mod cursor;
 mod keyboard;
 mod keymap;
 mod outbox;
@@ -13,6 +14,7 @@ use anyhow::Context;
 use esp32_uc_protocol::wire::{FirmwareMsg, HostMsg};
 use log::info;
 
+use self::cursor::CursorController;
 use self::outbox::Outbox;
 use crate::serial;
 use crate::slots::SlotTable;
@@ -30,19 +32,21 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
     info!("Real capture mode: forwarding keyboard + trackpad to firmware");
 
     let slots = Arc::new(Mutex::new(SlotTable::from_snapshot(&snapshot)));
-    {
+    let cursor = Arc::new(Mutex::new(CursorController::default()));
+    let initial_forwarding = {
         let table = slots.lock().expect("poisoned");
-        if table.is_forwarding() {
-            keyboard::hide_mac_cursor();
-        }
+        let forwarding = table.is_forwarding();
         table.print_status();
-    }
+        forwarding
+    };
+    sync_cursor(&cursor, initial_forwarding);
 
     let outbox = Arc::new(Outbox::new());
 
     // Serial writer thread. On disconnect, forces back to Mac.
     let mut writer = write_port;
     let writer_slots = Arc::clone(&slots);
+    let writer_cursor = Arc::clone(&cursor);
     let writer_outbox = Arc::clone(&outbox);
     std::thread::Builder::new()
         .name("serial-writer".into())
@@ -51,9 +55,13 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
                 let msg: HostMsg = writer_outbox.recv();
                 if let Err(e) = serial::send(&mut writer, &msg) {
                     log::error!("Serial disconnected ({e}), falling back to Mac");
-                    writer_slots.lock().expect("poisoned").set_active(None);
-                    keyboard::show_mac_cursor();
-                    writer_slots.lock().expect("poisoned").print_status();
+                    let forwarding = {
+                        let mut table = writer_slots.lock().expect("poisoned");
+                        table.set_active(None);
+                        table.print_status();
+                        table.is_forwarding()
+                    };
+                    sync_cursor(&writer_cursor, forwarding);
                     break;
                 }
             }
@@ -61,20 +69,20 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
 
     // Firmware event thread: updates slot table and prints status.
     let fw_slots = Arc::clone(&slots);
+    let fw_cursor = Arc::clone(&cursor);
     std::thread::Builder::new()
         .name("fw-events".into())
         .spawn(move || {
             while let Ok(msg) = fw_rx.recv() {
                 match msg {
                     FirmwareMsg::PeerSnapshot(snapshot) => {
-                        let mut table = fw_slots.lock().expect("slot table poisoned");
-                        table.apply_snapshot(&snapshot);
-                        if table.is_forwarding() {
-                            keyboard::hide_mac_cursor();
-                        } else {
-                            keyboard::show_mac_cursor();
-                        }
-                        table.print_status();
+                        let forwarding = {
+                            let mut table = fw_slots.lock().expect("slot table poisoned");
+                            table.apply_snapshot(&snapshot);
+                            table.print_status();
+                            table.is_forwarding()
+                        };
+                        sync_cursor(&fw_cursor, forwarding);
                     }
                     FirmwareMsg::PeerConnected(peer) => {
                         let mut table = fw_slots.lock().expect("slot table poisoned");
@@ -87,25 +95,28 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
                         table.print_status();
                     }
                     FirmwareMsg::PeerDisconnected { slot } => {
-                        let mut table = fw_slots.lock().expect("slot table poisoned");
-                        table.disconnect(slot);
-                        keyboard::show_mac_cursor();
+                        let forwarding = {
+                            let mut table = fw_slots.lock().expect("slot table poisoned");
+                            table.disconnect(slot);
+                            table.print_status();
+                            table.is_forwarding()
+                        };
+                        sync_cursor(&fw_cursor, forwarding);
                         info!("BLE slot {slot}: disconnected");
-                        table.print_status();
                     }
                     FirmwareMsg::ActivePeerChanged(active_slot) => {
-                        let mut table = fw_slots.lock().expect("slot table poisoned");
-                        table.set_active(active_slot);
-                        if table.is_forwarding() {
-                            keyboard::hide_mac_cursor();
-                            if let Some(slot) = table.active() {
-                                info!("Switched to remote slot {slot}");
-                            }
+                        let (forwarding, active) = {
+                            let mut table = fw_slots.lock().expect("slot table poisoned");
+                            table.set_active(active_slot);
+                            table.print_status();
+                            (table.is_forwarding(), table.active())
+                        };
+                        sync_cursor(&fw_cursor, forwarding);
+                        if let Some(slot) = active {
+                            info!("Switched to remote slot {slot}");
                         } else {
-                            keyboard::show_mac_cursor();
                             info!("Switched to Mac (local)");
                         }
-                        table.print_status();
                     }
                     FirmwareMsg::LedState(bits) => {
                         info!("LED state: {bits:#04x}");
@@ -142,4 +153,11 @@ pub fn run(port_name: &str) -> anyhow::Result<()> {
     trackpad::run(outbox, click_state, tp_fwd)?;
 
     Ok(())
+}
+
+fn sync_cursor(cursor: &Mutex<CursorController>, forwarding: bool) {
+    cursor
+        .lock()
+        .expect("cursor controller poisoned")
+        .sync_forwarding(forwarding);
 }
