@@ -337,6 +337,8 @@ pub fn run(
             CGEventType::OtherMouseUp,
             CGEventType::OtherMouseDragged,
             CGEventType::ScrollWheel,
+            CGEventType::TabletPointer,
+            CGEventType::TabletProximity,
         ],
         move |_proxy, event_type, event| {
             // Handle tap timeout/disable by re-enabling.
