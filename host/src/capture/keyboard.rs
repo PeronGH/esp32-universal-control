@@ -29,6 +29,7 @@ const MAC_3: u16 = 0x14;
 const MAC_4: u16 = 0x15;
 const MAC_5: u16 = 0x17;
 const MAC_ESCAPE: u16 = 0x35;
+const LOCAL_ESCAPE_EVENT_TAG: i64 = 0x4553_434c;
 
 /// Stored mach port ref for re-enabling the tap on TapDisabledByTimeout.
 static TAP_MACH_PORT: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
@@ -242,11 +243,23 @@ fn apply_modifier_transition(current: u8, mask: u8, generic_pressed: bool) -> u8
     }
 }
 
-fn emit_local_escape(keydown: bool) {
+fn local_escape_event(keydown: bool) -> Option<CGEvent> {
     let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
-        return;
+        return None;
     };
     let Ok(event) = CGEvent::new_keyboard_event(source, MAC_ESCAPE, keydown) else {
+        return None;
+    };
+    event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, LOCAL_ESCAPE_EVENT_TAG);
+    Some(event)
+}
+
+fn is_local_escape_passthrough(event: &CGEvent) -> bool {
+    event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == LOCAL_ESCAPE_EVENT_TAG
+}
+
+fn emit_local_escape(keydown: bool) {
+    let Some(event) = local_escape_event(keydown) else {
         return;
     };
     event.post(CGEventTapLocation::HID);
@@ -334,6 +347,10 @@ pub fn run(
                     return CallbackResult::Keep;
                 }
                 _ => {}
+            }
+
+            if is_local_escape_passthrough(event) {
+                return CallbackResult::Keep;
             }
 
             // Lock-free: single atomic read, no mutex.
@@ -494,7 +511,12 @@ fn handle_slot_hotkey(
 
 #[cfg(test)]
 mod tests {
-    use super::apply_modifier_transition;
+    use core_graphics::event::{CGEvent, EventField};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+    use super::{
+        MAC_ESCAPE, apply_modifier_transition, is_local_escape_passthrough, local_escape_event,
+    };
 
     #[test]
     fn releasing_left_ctrl_keeps_right_ctrl_pressed() {
@@ -524,5 +546,25 @@ mod tests {
         let next = apply_modifier_transition(left_command, left_command, false);
 
         assert_eq!(next, 0);
+    }
+
+    #[test]
+    fn tags_synthetic_local_escape_events_for_passthrough() {
+        let event = local_escape_event(true).expect("synthetic escape event");
+
+        assert!(is_local_escape_passthrough(&event));
+        assert_eq!(
+            event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16,
+            MAC_ESCAPE
+        );
+    }
+
+    #[test]
+    fn leaves_hardware_escape_events_untagged() {
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .expect("hardware event source");
+        let event = CGEvent::new_keyboard_event(source, MAC_ESCAPE, true).expect("escape event");
+
+        assert!(!is_local_escape_passthrough(&event));
     }
 }
