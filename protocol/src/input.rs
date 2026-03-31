@@ -41,9 +41,9 @@ pub struct KeyboardSnapshot {
 pub struct TouchContact {
     /// Stable contact identifier for the current finger lifecycle.
     pub contact_id: u32,
-    /// X coordinate in PTP logical units (0..=20000).
+    /// X coordinate in PTP logical units (0..=12480).
     pub x: u16,
-    /// Y coordinate in PTP logical units (0..=12000).
+    /// Y coordinate in PTP logical units (0..=7680).
     pub y: u16,
     /// Whether the contact is touching the surface.
     pub touching: bool,

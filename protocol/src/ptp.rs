@@ -27,6 +27,16 @@ pub const REPORTID_PTPHQA: u8 = 0x08;
 
 /// Maximum simultaneous contacts reported to Windows.
 pub const MAX_CONTACTS: u8 = 5;
+/// Touchpad X coordinate maximum in logical units.
+pub const LOGICAL_X_MAX: u16 = 12_480;
+/// Touchpad Y coordinate maximum in logical units.
+pub const LOGICAL_Y_MAX: u16 = 7_680;
+/// Scale factor between logical units and advertised physical units.
+pub const PHYSICAL_SCALE_DIVISOR: u16 = 10;
+/// Touchpad X size in physical units advertised by the HID descriptor.
+pub const PHYSICAL_X_MAX: u16 = LOGICAL_X_MAX / PHYSICAL_SCALE_DIVISOR;
+/// Touchpad Y size in physical units advertised by the HID descriptor.
+pub const PHYSICAL_Y_MAX: u16 = LOGICAL_Y_MAX / PHYSICAL_SCALE_DIVISOR;
 
 // ---------------------------------------------------------------------------
 // Input report struct (report ID 0x05, 49 bytes excluding report ID)
@@ -52,9 +62,9 @@ pub struct PtpContact {
     pub flags: u8,
     /// Contact identifier (unique per tracked finger).
     pub contact_id: u32,
-    /// X coordinate in logical units (0–20000).
+    /// X coordinate in logical units (0–12480).
     pub x: u16,
-    /// Y coordinate in logical units (0–12000).
+    /// Y coordinate in logical units (0–7680).
     pub y: u16,
 }
 

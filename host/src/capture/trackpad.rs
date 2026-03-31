@@ -14,6 +14,7 @@ use core_foundation::array::CFArrayGetValueAtIndex;
 use log::info;
 
 use esp32_uc_protocol::input::{TouchContact, TouchFrame};
+use esp32_uc_protocol::ptp;
 use esp32_uc_protocol::wire::HostMsg;
 
 use super::outbox::Outbox;
@@ -65,8 +66,6 @@ const _: () = assert!(size_of::<MTTouch>() == 96);
 /// Callback return: 0 = pass through to system, non-zero = consume.
 type MTContactCallbackFn = unsafe extern "C" fn(MTDeviceRef, *const MTTouch, i32, f64, i32) -> i32;
 
-const PTP_X_MAX: f32 = 20_000.0;
-const PTP_Y_MAX: f32 = 12_000.0;
 const TOUCHING_STATE: i32 = 4;
 
 static TX: std::sync::OnceLock<Arc<Outbox>> = std::sync::OnceLock::new();
@@ -88,8 +87,8 @@ fn build_touch_frame(touches: &[MTTouch], clicked: bool) -> TouchFrame {
         if touch.state == TOUCHING_STATE {
             frame.contacts[active] = TouchContact {
                 contact_id: touch.identifier as u32,
-                x: (touch.normalized.position.x * PTP_X_MAX) as u16,
-                y: ((1.0 - touch.normalized.position.y) * PTP_Y_MAX) as u16,
+                x: (touch.normalized.position.x * f32::from(ptp::LOGICAL_X_MAX)) as u16,
+                y: ((1.0 - touch.normalized.position.y) * f32::from(ptp::LOGICAL_Y_MAX)) as u16,
                 touching: true,
                 confident: true,
             };
