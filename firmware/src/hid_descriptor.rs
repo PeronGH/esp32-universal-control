@@ -131,137 +131,284 @@ const fn hi_u16(value: u16) -> u8 {
     (value >> 8) as u8
 }
 
+const FINGER_PAGE_SWITCH: &[u8] = &[USAGE_PAGE_8, 0x0d];
+
+const FINGER_PREFIX: &[u8] = &[
+    USAGE_8,
+    0x22,
+    COLLECTION_8,
+    0x02,
+    LOGICAL_MAXIMUM_8,
+    0x01,
+    USAGE_8,
+    0x47,
+    USAGE_8,
+    0x42,
+    REPORT_COUNT_8,
+    0x02,
+    REPORT_SIZE_8,
+    0x01,
+    HIDINPUT_8,
+    0x02,
+    REPORT_SIZE_8,
+    0x01,
+    REPORT_COUNT_8,
+    0x06,
+    HIDINPUT_8,
+    0x03,
+    REPORT_COUNT_8,
+    0x01,
+    REPORT_SIZE_8,
+    0x20,
+    LOGICAL_MAXIMUM_32,
+    0xff,
+    0xff,
+    0xff,
+    0xff,
+    USAGE_8,
+    0x51,
+    HIDINPUT_8,
+    0x02,
+];
+
+const FINGER_SPATIAL_FIELDS: &[u8] = &[
+    USAGE_PAGE_8,
+    0x01,
+    LOGICAL_MAXIMUM_16,
+    lo_u16(ptp::LOGICAL_X_MAX),
+    hi_u16(ptp::LOGICAL_X_MAX),
+    REPORT_SIZE_8,
+    0x10,
+    UNIT_EXPONENT_8,
+    0x0e,
+    UNIT_8,
+    0x11,
+    USAGE_8,
+    0x30,
+    PHYSICAL_MAXIMUM_16,
+    lo_u16(ptp::PHYSICAL_X_MAX),
+    hi_u16(ptp::PHYSICAL_X_MAX),
+    REPORT_COUNT_8,
+    0x01,
+    HIDINPUT_8,
+    0x02,
+    PHYSICAL_MAXIMUM_16,
+    lo_u16(ptp::PHYSICAL_Y_MAX),
+    hi_u16(ptp::PHYSICAL_Y_MAX),
+    LOGICAL_MAXIMUM_16,
+    lo_u16(ptp::LOGICAL_Y_MAX),
+    hi_u16(ptp::LOGICAL_Y_MAX),
+    USAGE_8,
+    0x31,
+    HIDINPUT_8,
+    0x02,
+];
+
+const FINGER_UNIT_RESET: &[u8] = &[
+    PHYSICAL_MAXIMUM_8,
+    0x00,
+    UNIT_EXPONENT_8,
+    0x00,
+    UNIT_8,
+    0x00,
+];
+
+const PTP_HEADER: &[u8] = &[
+    USAGE_PAGE_8,
+    0x0d,
+    USAGE_8,
+    0x05,
+    COLLECTION_8,
+    0x01,
+    REPORT_ID_8,
+    REPORTID_MULTITOUCH,
+];
+
+const PTP_SUFFIX: &[u8] = &[
+    USAGE_PAGE_8,
+    0x0d,
+    UNIT_EXPONENT_8,
+    0x0c,
+    UNIT_16,
+    0x01,
+    0x10,
+    PHYSICAL_MAXIMUM_32,
+    0xff,
+    0xff,
+    0x00,
+    0x00,
+    LOGICAL_MAXIMUM_32,
+    0xff,
+    0xff,
+    0x00,
+    0x00,
+    USAGE_8,
+    0x56,
+    HIDINPUT_8,
+    0x02,
+    USAGE_8,
+    0x54,
+    LOGICAL_MAXIMUM_8,
+    0x7f,
+    REPORT_SIZE_8,
+    0x08,
+    HIDINPUT_8,
+    0x02,
+    USAGE_PAGE_8,
+    0x09,
+    USAGE_8,
+    0x01,
+    LOGICAL_MAXIMUM_8,
+    0x01,
+    REPORT_SIZE_8,
+    0x01,
+    HIDINPUT_8,
+    0x02,
+    REPORT_COUNT_8,
+    0x07,
+    HIDINPUT_8,
+    0x03,
+    USAGE_PAGE_8,
+    0x0d,
+    REPORT_ID_8,
+    REPORTID_DEVICE_CAPS,
+    USAGE_8,
+    0x55,
+    USAGE_8,
+    0x59,
+    LOGICAL_MINIMUM_8,
+    0x00,
+    LOGICAL_MAXIMUM_16,
+    0xff,
+    0x00,
+    REPORT_SIZE_8,
+    0x08,
+    REPORT_COUNT_8,
+    0x02,
+    FEATURE_8,
+    0x02,
+    USAGE_PAGE_16,
+    0x00,
+    0xff,
+    REPORT_ID_8,
+    REPORTID_PTPHQA,
+    USAGE_8,
+    0xc5,
+    LOGICAL_MINIMUM_8,
+    0x00,
+    LOGICAL_MAXIMUM_16,
+    0xff,
+    0x00,
+    REPORT_SIZE_8,
+    0x08,
+    REPORT_COUNT_16,
+    0x00,
+    0x01,
+    FEATURE_8,
+    0x02,
+    END_COLLECTION,
+    USAGE_PAGE_8,
+    0x0d,
+    USAGE_8,
+    0x0e,
+    COLLECTION_8,
+    0x01,
+    REPORT_ID_8,
+    REPORTID_REPORTMODE,
+    USAGE_8,
+    0x22,
+    COLLECTION_8,
+    0x02,
+    USAGE_8,
+    0x52,
+    LOGICAL_MINIMUM_8,
+    0x00,
+    LOGICAL_MAXIMUM_8,
+    ptp::MAX_CONTACTS,
+    REPORT_SIZE_8,
+    0x08,
+    REPORT_COUNT_8,
+    0x01,
+    FEATURE_8,
+    0x02,
+    END_COLLECTION,
+    COLLECTION_8,
+    0x00,
+    REPORT_ID_8,
+    REPORTID_FUNCSWITCH,
+    USAGE_8,
+    0x57,
+    USAGE_8,
+    0x58,
+    REPORT_SIZE_8,
+    0x01,
+    REPORT_COUNT_8,
+    0x02,
+    LOGICAL_MAXIMUM_8,
+    0x01,
+    FEATURE_8,
+    0x02,
+    REPORT_COUNT_8,
+    0x06,
+    FEATURE_8,
+    0x03,
+    END_COLLECTION,
+    END_COLLECTION,
+];
+
+const PTP_DESCRIPTOR_LEN: usize = PTP_HEADER.len()
+    + 5 * (FINGER_PREFIX.len() + FINGER_SPATIAL_FIELDS.len() + 1)
+    + 4 * FINGER_PAGE_SWITCH.len()
+    + 3 * FINGER_UNIT_RESET.len()
+    + PTP_SUFFIX.len();
+
+const fn push_slice<const N: usize>(buf: &mut [u8; N], index: &mut usize, slice: &[u8]) {
+    let mut i = 0;
+    while i < slice.len() {
+        buf[*index] = slice[i];
+        *index += 1;
+        i += 1;
+    }
+}
+
+const fn append_finger<const N: usize>(
+    buf: &mut [u8; N],
+    index: &mut usize,
+    include_page_switch: bool,
+    include_unit_reset: bool,
+) {
+    if include_page_switch {
+        push_slice(buf, index, FINGER_PAGE_SWITCH);
+    }
+    push_slice(buf, index, FINGER_PREFIX);
+    push_slice(buf, index, FINGER_SPATIAL_FIELDS);
+    if include_unit_reset {
+        push_slice(buf, index, FINGER_UNIT_RESET);
+    }
+    buf[*index] = END_COLLECTION;
+    *index += 1;
+}
+
+const fn build_ptp_descriptor() -> [u8; PTP_DESCRIPTOR_LEN] {
+    let mut buf = [0u8; PTP_DESCRIPTOR_LEN];
+    let mut index = 0usize;
+
+    push_slice(&mut buf, &mut index, PTP_HEADER);
+    append_finger(&mut buf, &mut index, false, true);
+    append_finger(&mut buf, &mut index, true, true);
+    append_finger(&mut buf, &mut index, true, false);
+    append_finger(&mut buf, &mut index, true, true);
+    append_finger(&mut buf, &mut index, true, false);
+    push_slice(&mut buf, &mut index, PTP_SUFFIX);
+
+    buf
+}
+
 /// PTP touchpad + configuration HID descriptor fragment.
 ///
 /// Translated byte-for-byte from `imbushuo/mac-precision-touchpad`
 /// `WellspringT2.h` + `Hid.h`.
-#[rustfmt::skip]
-const PTP_DESCRIPTOR: &[u8] = &[
-    // =========================================================================
-    // TLC 3: Digitizer / Touch Pad
-    // =========================================================================
-    USAGE_PAGE_8,   0x0d,                       // Digitizer
-    USAGE_8,        0x05,                       // Touch Pad
-    COLLECTION_8,   0x01,                       // Application
-
-    REPORT_ID_8,    REPORTID_MULTITOUCH,
-
-    // ----- Finger 1 (variant 1: with unit reset) ----------------------------
-    USAGE_8, 0x22, COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
-    REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
-    REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
-    REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
-    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
-    USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_X_MAX), hi_u16(ptp::LOGICAL_X_MAX), REPORT_SIZE_8, 0x10,
-    UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
-    USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_X_MAX), hi_u16(ptp::PHYSICAL_X_MAX), REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
-    PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_Y_MAX), hi_u16(ptp::PHYSICAL_Y_MAX), LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_Y_MAX), hi_u16(ptp::LOGICAL_Y_MAX), USAGE_8, 0x31, HIDINPUT_8, 0x02,
-    PHYSICAL_MAXIMUM_8, 0x00, UNIT_EXPONENT_8, 0x00, UNIT_8, 0x00,
-    END_COLLECTION,
-
-    // ----- Finger 2 (variant 1: with unit reset) ----------------------------
-    USAGE_PAGE_8, 0x0d, USAGE_8, 0x22, COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
-    REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
-    REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
-    REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
-    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
-    USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_X_MAX), hi_u16(ptp::LOGICAL_X_MAX), REPORT_SIZE_8, 0x10,
-    UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
-    USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_X_MAX), hi_u16(ptp::PHYSICAL_X_MAX), REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
-    PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_Y_MAX), hi_u16(ptp::PHYSICAL_Y_MAX), LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_Y_MAX), hi_u16(ptp::LOGICAL_Y_MAX), USAGE_8, 0x31, HIDINPUT_8, 0x02,
-    PHYSICAL_MAXIMUM_8, 0x00, UNIT_EXPONENT_8, 0x00, UNIT_8, 0x00,
-    END_COLLECTION,
-
-    // ----- Finger 3 (variant 2: no unit reset) ------------------------------
-    USAGE_PAGE_8, 0x0d, USAGE_8, 0x22, COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
-    REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
-    REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
-    REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
-    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
-    USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_X_MAX), hi_u16(ptp::LOGICAL_X_MAX), REPORT_SIZE_8, 0x10,
-    UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
-    USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_X_MAX), hi_u16(ptp::PHYSICAL_X_MAX), REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
-    PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_Y_MAX), hi_u16(ptp::PHYSICAL_Y_MAX), LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_Y_MAX), hi_u16(ptp::LOGICAL_Y_MAX), USAGE_8, 0x31, HIDINPUT_8, 0x02,
-    END_COLLECTION,
-
-    // ----- Finger 4 (variant 1: with unit reset) ----------------------------
-    USAGE_PAGE_8, 0x0d, USAGE_8, 0x22, COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
-    REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
-    REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
-    REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
-    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
-    USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_X_MAX), hi_u16(ptp::LOGICAL_X_MAX), REPORT_SIZE_8, 0x10,
-    UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
-    USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_X_MAX), hi_u16(ptp::PHYSICAL_X_MAX), REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
-    PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_Y_MAX), hi_u16(ptp::PHYSICAL_Y_MAX), LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_Y_MAX), hi_u16(ptp::LOGICAL_Y_MAX), USAGE_8, 0x31, HIDINPUT_8, 0x02,
-    PHYSICAL_MAXIMUM_8, 0x00, UNIT_EXPONENT_8, 0x00, UNIT_8, 0x00,
-    END_COLLECTION,
-
-    // ----- Finger 5 (variant 2: no unit reset) ------------------------------
-    USAGE_PAGE_8, 0x0d, USAGE_8, 0x22, COLLECTION_8, 0x02,
-    LOGICAL_MAXIMUM_8, 0x01, USAGE_8, 0x47, USAGE_8, 0x42,
-    REPORT_COUNT_8, 0x02, REPORT_SIZE_8, 0x01, HIDINPUT_8, 0x02,
-    REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x06, HIDINPUT_8, 0x03,
-    REPORT_COUNT_8, 0x01, REPORT_SIZE_8, 0x20,
-    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0xff, 0xff,
-    USAGE_8, 0x51, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x01, LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_X_MAX), hi_u16(ptp::LOGICAL_X_MAX), REPORT_SIZE_8, 0x10,
-    UNIT_EXPONENT_8, 0x0e, UNIT_8, 0x11,
-    USAGE_8, 0x30, PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_X_MAX), hi_u16(ptp::PHYSICAL_X_MAX), REPORT_COUNT_8, 0x01, HIDINPUT_8, 0x02,
-    PHYSICAL_MAXIMUM_16, lo_u16(ptp::PHYSICAL_Y_MAX), hi_u16(ptp::PHYSICAL_Y_MAX), LOGICAL_MAXIMUM_16, lo_u16(ptp::LOGICAL_Y_MAX), hi_u16(ptp::LOGICAL_Y_MAX), USAGE_8, 0x31, HIDINPUT_8, 0x02,
-    END_COLLECTION,
-
-    // ----- Scan Time --------------------------------------------------------
-    USAGE_PAGE_8, 0x0d, UNIT_EXPONENT_8, 0x0c, UNIT_16, 0x01, 0x10,
-    PHYSICAL_MAXIMUM_32, 0xff, 0xff, 0x00, 0x00,
-    LOGICAL_MAXIMUM_32, 0xff, 0xff, 0x00, 0x00,
-    USAGE_8, 0x56, HIDINPUT_8, 0x02,
-
-    // ----- Contact Count + Button -------------------------------------------
-    USAGE_8, 0x54, LOGICAL_MAXIMUM_8, 0x7f, REPORT_SIZE_8, 0x08, HIDINPUT_8, 0x02,
-    USAGE_PAGE_8, 0x09, USAGE_8, 0x01, LOGICAL_MAXIMUM_8, 0x01, REPORT_SIZE_8, 0x01,
-    HIDINPUT_8, 0x02, REPORT_COUNT_8, 0x07, HIDINPUT_8, 0x03,
-
-    // ----- Feature: Device Capabilities (0x07) ------------------------------
-    USAGE_PAGE_8, 0x0d, REPORT_ID_8, REPORTID_DEVICE_CAPS,
-    USAGE_8, 0x55, USAGE_8, 0x59,
-    LOGICAL_MINIMUM_8, 0x00, LOGICAL_MAXIMUM_16, 0xff, 0x00,
-    REPORT_SIZE_8, 0x08, REPORT_COUNT_8, 0x02, FEATURE_8, 0x02,
-
-    // ----- Feature: PTPHQA Certification (0x08) -----------------------------
-    USAGE_PAGE_16, 0x00, 0xff, REPORT_ID_8, REPORTID_PTPHQA,
-    USAGE_8, 0xc5, LOGICAL_MINIMUM_8, 0x00, LOGICAL_MAXIMUM_16, 0xff, 0x00,
-    REPORT_SIZE_8, 0x08, REPORT_COUNT_16, 0x00, 0x01, FEATURE_8, 0x02,
-
-    END_COLLECTION,
-
-    // =========================================================================
-    // TLC 4: Digitizer / Configuration
-    // =========================================================================
-    USAGE_PAGE_8, 0x0d, USAGE_8, 0x0e, COLLECTION_8, 0x01,
-
-    REPORT_ID_8, REPORTID_REPORTMODE,
-    USAGE_8, 0x22, COLLECTION_8, 0x02,
-    USAGE_8, 0x52, LOGICAL_MINIMUM_8, 0x00, LOGICAL_MAXIMUM_8, ptp::MAX_CONTACTS,
-    REPORT_SIZE_8, 0x08, REPORT_COUNT_8, 0x01, FEATURE_8, 0x02,
-    END_COLLECTION,
-
-    COLLECTION_8, 0x00, REPORT_ID_8, REPORTID_FUNCSWITCH,
-    USAGE_8, 0x57, USAGE_8, 0x58,
-    REPORT_SIZE_8, 0x01, REPORT_COUNT_8, 0x02, LOGICAL_MAXIMUM_8, 0x01, FEATURE_8, 0x02,
-    REPORT_COUNT_8, 0x06, FEATURE_8, 0x03,
-    END_COLLECTION,
-
-    END_COLLECTION,
-];
+const PTP_DESCRIPTOR: &[u8] = &build_ptp_descriptor();
 
 // ---------------------------------------------------------------------------
 // Composite descriptor (concatenated at compile time)
