@@ -81,6 +81,14 @@ fn reenable_tap() {
     }
 }
 
+fn ptp_button_transition(event_type: CGEventType) -> Option<bool> {
+    match event_type {
+        CGEventType::LeftMouseDown | CGEventType::RightMouseDown => Some(true),
+        CGEventType::LeftMouseUp | CGEventType::RightMouseUp => Some(false),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
 struct CaptureState {
     keyboard: KeyboardSnapshot,
@@ -416,19 +424,11 @@ pub fn run(
                     CallbackResult::Keep
                 }
 
-                // Click detection for PTP button field.
-                CGEventType::LeftMouseDown => {
-                    if fwd {
-                        click_state.store(true, Ordering::Release);
+                // Click detection for the single PTP clickpad button field.
+                event_type if ptp_button_transition(event_type).is_some() => {
+                    if let Some(pressed) = ptp_button_transition(event_type) {
+                        click_state.store(pressed, Ordering::Release);
                     }
-                    if fwd {
-                        CallbackResult::Drop
-                    } else {
-                        CallbackResult::Keep
-                    }
-                }
-                CGEventType::LeftMouseUp => {
-                    click_state.store(false, Ordering::Release);
                     if fwd {
                         CallbackResult::Drop
                     } else {
@@ -513,11 +513,12 @@ fn handle_slot_hotkey(
 
 #[cfg(test)]
 mod tests {
-    use core_graphics::event::{CGEvent, EventField};
+    use core_graphics::event::{CGEvent, CGEventType, EventField};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
     use super::{
         MAC_ESCAPE, apply_modifier_transition, is_local_escape_passthrough, local_escape_event,
+        ptp_button_transition,
     };
 
     #[test]
@@ -568,5 +569,17 @@ mod tests {
         let event = CGEvent::new_keyboard_event(source, MAC_ESCAPE, true).expect("escape event");
 
         assert!(!is_local_escape_passthrough(&event));
+    }
+
+    #[test]
+    fn right_click_events_drive_ptp_button() {
+        assert_eq!(
+            ptp_button_transition(CGEventType::RightMouseDown),
+            Some(true)
+        );
+        assert_eq!(
+            ptp_button_transition(CGEventType::RightMouseUp),
+            Some(false)
+        );
     }
 }
